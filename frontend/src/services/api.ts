@@ -1,0 +1,95 @@
+import axios from 'axios';
+import { ScanRequest, ScanResult } from '../types';
+
+const API_BASE = '/api';
+
+const api = axios.create({
+  baseURL: API_BASE,
+  timeout: 30000,
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Exposure Scan endpoints (all 6 types: CVE, secrets, certs, misconfig, license, code-security)
+export async function startScan(request: ScanRequest): Promise<{ scanId: string; status: string }> {
+  const response = await api.post('/exposure-scan', request);
+  return response.data;
+}
+
+export async function getScanStatus(scanId: string): Promise<{
+  scanId: string;
+  status: string;
+  progress: number;
+  progressMessage: string;
+  error?: string;
+}> {
+  const response = await api.get(`/exposure-scan/${scanId}/status`);
+  return response.data;
+}
+
+export async function getScanResults(scanId: string): Promise<ScanResult> {
+  const response = await api.get(`/exposure-scan/${scanId}/results`);
+  return response.data;
+}
+
+export async function getAllScans(): Promise<Array<{
+  scanId: string;
+  status: string;
+  repoUrl: string;
+  startTime: string;
+  totalExposures: number;
+  byType: Record<string, number>;
+}>> {
+  const response = await api.get('/exposure-scans');
+  return response.data;
+}
+
+export async function deleteScan(scanId: string): Promise<void> {
+  // Try exposure-scan first, then fall back to legacy
+  try {
+    await api.delete(`/scan/${scanId}`);
+  } catch {
+    // Scan might be in the exposure-scan store
+  }
+}
+
+// Health check
+export async function checkHealth(): Promise<{ status: string; timestamp: string; version: string }> {
+  const response = await api.get('/health');
+  return response.data;
+}
+
+// Poll scan status until complete
+export async function pollScanStatus(
+  scanId: string,
+  onProgress?: (status: string, progress: number, message: string) => void,
+  interval: number = 2000
+): Promise<ScanResult> {
+  return new Promise((resolve, reject) => {
+    const poll = async () => {
+      try {
+        const status = await getScanStatus(scanId);
+
+        if (onProgress) {
+          onProgress(status.status, status.progress, status.progressMessage);
+        }
+
+        if (status.status === 'complete') {
+          const results = await getScanResults(scanId);
+          resolve(results);
+        } else if (status.status === 'error') {
+          reject(new Error(status.error || 'Scan failed'));
+        } else {
+          setTimeout(poll, interval);
+        }
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    poll();
+  });
+}
+
+export default api;
