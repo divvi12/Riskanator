@@ -20,6 +20,8 @@ import {
 import { Save, CheckmarkFilled, WarningAlt, Bot, Connect, Settings as SettingsIcon, Information, Security } from '@carbon/icons-react';
 import { useNotifications } from '../components/NotificationProvider';
 import { SettingsFormSkeleton } from '../components/SkeletonLoaders';
+import { useAppContext } from '../App';
+import { recalculateScores } from '../services/api';
 
 interface ApplicationContextSettings {
   criticality: number;
@@ -43,8 +45,10 @@ interface GeminiSettings {
 
 function Settings() {
   const { showError, showSuccess } = useNotifications();
+  const { currentScan, setCurrentScan } = useAppContext();
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isRecalculating, setIsRecalculating] = useState(false);
 
   const [appContext, setAppContext] = useState<ApplicationContextSettings>({
     criticality: 3,
@@ -131,7 +135,7 @@ function Settings() {
     }, 1500);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setIsSaving(true);
     try {
       // Save to localStorage
@@ -142,7 +146,37 @@ function Settings() {
         appContext
       }));
       setSaved(true);
-      showSuccess('Settings saved', 'Your configuration has been saved');
+
+      // Auto-recalculate if there's scan data (for Application Context tab)
+      if (activeTab === 0 && currentScan?.exposures && currentScan.exposures.length > 0) {
+        setIsRecalculating(true);
+        try {
+          const context = {
+            criticality: appContext.criticality,
+            dataSensitivity: appContext.dataSensitivity,
+            networkExposure: appContext.networkExposure,
+            publicEndpoints: appContext.publicEndpoints,
+            privateEndpoints: appContext.privateEndpoints,
+            requiresAuth: appContext.requiresAuth
+          };
+
+          const result = await recalculateScores(currentScan.exposures, context);
+          setCurrentScan({
+            ...currentScan,
+            exposures: result.exposures,
+            summary: result.summary
+          });
+          showSuccess('Settings saved & scores recalculated', `${result.exposures.length} exposures updated`);
+        } catch (recalcError) {
+          showSuccess('Settings saved', 'Scores will update on next scan');
+          console.error('Recalculation error:', recalcError);
+        } finally {
+          setIsRecalculating(false);
+        }
+      } else {
+        showSuccess('Settings saved', 'Your configuration has been saved');
+      }
+
       setTimeout(() => setSaved(false), 3000);
     } catch (error) {
       showError('Failed to save settings', 'Please try again');
@@ -485,18 +519,28 @@ function Settings() {
                 />
               </Tile>
 
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <Button kind="primary" renderIcon={Save} onClick={handleSave} disabled={isSaving}>
-                  {isSaving ? 'Saving...' : 'Save Application Context'}
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button kind="primary" renderIcon={Save} onClick={handleSave} disabled={isSaving || isRecalculating}>
+                  {isSaving ? (isRecalculating ? 'Recalculating...' : 'Saving...') : (currentScan?.exposures?.length ? 'Save & Recalculate' : 'Save Application Context')}
                 </Button>
-                {isSaving && <InlineLoading description="Saving..." />}
+                {(isSaving || isRecalculating) && <InlineLoading description={isRecalculating ? 'Recalculating scores...' : 'Saving...'} />}
               </div>
+
+              {!currentScan?.exposures?.length && (
+                <InlineNotification
+                  kind="warning"
+                  title="No scan data"
+                  subtitle="Run a scan first. Settings will be applied when you scan a repository."
+                  style={{ marginTop: '1rem' }}
+                  lowContrast
+                />
+              )}
 
               <InlineNotification
                 kind="info"
                 title="How this affects risk scores"
-                subtitle="Higher criticality and data sensitivity will increase risk scores. Public exposure adds weight to vulnerabilities. These settings apply to all future scans."
-                style={{ marginTop: '1.5rem' }}
+                subtitle="Higher criticality and data sensitivity will increase risk scores. Public exposure adds weight to vulnerabilities. Saving will automatically recalculate scores for the current scan."
+                style={{ marginTop: '1rem' }}
                 lowContrast
               />
             </div>

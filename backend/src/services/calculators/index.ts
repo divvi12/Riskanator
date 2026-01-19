@@ -26,6 +26,9 @@ export {
   createCodeSecurityCalculator
 } from './codeSecurityCalculator';
 
+// SAST/DAST calculator (Formula 2)
+export { SASTDASTCalculator, sastDastCalculator } from './sastDastCalculator';
+
 // Aggregate calculator
 export { AggregateScoreCalculator, aggregateCalculator } from './aggregateCalculator';
 

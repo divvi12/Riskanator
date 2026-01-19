@@ -12,7 +12,6 @@ import RemediationGroups from './pages/RemediationGroups';
 import ArenaView from './pages/ArenaView';
 import Settings from './pages/Settings';
 import Compliance from './pages/Compliance';
-import ScanHistory from './pages/ScanHistory';
 import {
   ScanResult,
   ApplicationContext,
@@ -121,6 +120,7 @@ interface AppContextType {
   fixedExposureIds: Set<string>;
   markGroupFixed: (groupId: string, riskReduction: number, exposureIds: string[]) => void;
   unfixExposuresFoundInScan: (foundExposureIds: string[]) => void;
+  clearFixedState: () => void;
   totalRiskReduction: number;
   // Gamification
   userProgress: UserProgress;
@@ -147,6 +147,7 @@ export const AppContext = createContext<AppContextType>({
   fixedExposureIds: new Set(),
   markGroupFixed: () => {},
   unfixExposuresFoundInScan: () => {},
+  clearFixedState: () => {},
   totalRiskReduction: 0,
   // Gamification defaults
   userProgress: getDefaultProgress(),
@@ -248,6 +249,13 @@ function App() {
       setTotalRiskReduction(0);
     }
   }, [fixedExposureIds]);
+
+  // Clear all fixed state (called when starting a new scan)
+  const clearFixedState = useCallback(() => {
+    setFixedGroupIds(new Set());
+    setFixedExposureIds(new Set());
+    setTotalRiskReduction(0);
+  }, []);
 
   // Gamification state
   const [userProgress, setUserProgress] = useState<UserProgress>(() => {
@@ -506,6 +514,7 @@ function App() {
         fixedExposureIds,
         markGroupFixed,
         unfixExposuresFoundInScan,
+        clearFixedState,
         totalRiskReduction,
         // Gamification
         userProgress,
@@ -544,7 +553,6 @@ function App() {
                 <Route path="remediation" element={<RemediationGroups />} />
                 <Route path="remediation-legacy" element={<Remediation />} />
                 <Route path="compliance" element={<Compliance />} />
-                <Route path="history" element={<ScanHistory />} />
                 <Route path="settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="dashboard" replace />} />
               </Routes>

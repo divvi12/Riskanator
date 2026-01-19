@@ -82,11 +82,46 @@ export interface RiskScoreBreakdown {
   typeSpecificFactors?: Record<string, number>;
 }
 
-// Environmental context for scoring
+// Environmental context for scoring (Formula 3: Unified Exposure)
 export interface EnvironmentalContext {
   assetCriticality: 1 | 2 | 3 | 4 | 5;  // Tier 1-5
   dataSensitivity: 'public' | 'internal' | 'confidential' | 'restricted';
   networkExposure: 'air-gapped' | 'segmented' | 'internal' | 'dmz' | 'internet-facing';
+}
+
+// Concert Environmental Context (Formula 1: CVE Risk Score)
+// Uses equilibrium-based scoring with access points
+export interface ConcertEnvironmentalContext {
+  applicationCriticality: 1 | 2 | 3 | 4 | 5;  // Level 1-5, equilibrium at 3.5
+  dataSensitivity: 1 | 2 | 3 | 4 | 5;          // Level 1-5, equilibrium at 3.5
+  publicAccessPoints: number;                   // Number of public access points (equilibrium at 1)
+  privateAccessPoints: number;                  // Only used if no public access
+}
+
+// Formula 1 Risk Score result
+export interface ConcertCVERiskScore {
+  score: number;                     // 0.1-10.0 final score
+  severity: number;                  // CVSS or fallback
+  exploitabilityFactor: number;      // 0.5-1.25 from EPSS
+  environmentalFactor: number;       // 0.25-1.25 from context
+  breakdown: {
+    applicationCriticalityFactor: number;
+    dataSensitivityFactor: number;
+    accessPointsFactor: number;
+  };
+}
+
+// Formula 2 Risk Score result (SAST/DAST)
+export interface ConcertExposureRiskScore {
+  score: number;                     // 1.0-10.0 final score
+  severity: number;                  // Tool-specific severity
+  environmentalFactor: number;       // Same as Formula 1
+  toolType: 'sast' | 'dast';
+  breakdown: {
+    applicationCriticalityFactor: number;
+    dataSensitivityFactor: number;
+    accessPointsFactor: number;
+  };
 }
 
 // Score override configuration for manual adjustments

@@ -153,7 +153,7 @@ function ChallengeCard({ challenge }: { challenge: any }) {
 }
 
 function Dashboard() {
-  const { currentScan, isDemoMode, applicationContext, userProgress, challenges, totalRiskReduction, fixedGroupIds } = useAppContext();
+  const { currentScan, isDemoMode, applicationContext, userProgress, challenges, fixedGroupIds, fixedExposureIds } = useAppContext();
   const navigate = useNavigate();
   const { showSuccess } = useNotifications();
   const [isLoading, setIsLoading] = useState(false);
@@ -199,11 +199,15 @@ function Dashboard() {
   // Real scans now include full summary with byType, slaStatus, etc.
   const extendedSummary = isDemoMode ? demoExtendedScanResult.summary : (summary as any);
 
-  // Calculate adjusted exposure score based on fixed remediation groups
-  // Risk reduction is stored as a percentage (0-100), so we convert to score reduction on 0-10 scale
+  // Calculate adjusted exposure score based on fixed exposures
+  // Use proportional reduction: score reduces proportionally to the percentage of exposures fixed
   const originalExposureScore = extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0;
-  const scoreReduction = (totalRiskReduction / 100) * 10;
-  const adjustedExposureScore = Math.max(0, Math.round((originalExposureScore - scoreReduction) * 10) / 10);
+  const totalExposureCount = extendedSummary?.totalExposures || (summary as any)?.totalCVEs || cves?.length || 0;
+  const fixedCount = fixedExposureIds.size;
+  // Calculate proportion of exposures remaining (unfixed)
+  const proportionRemaining = totalExposureCount > 0 ? Math.max(0, (totalExposureCount - fixedCount) / totalExposureCount) : 1;
+  const adjustedExposureScore = Math.round(originalExposureScore * proportionRemaining * 10) / 10;
+  const scoreReduction = Math.round((originalExposureScore - adjustedExposureScore) * 10) / 10;
   const hasFixedGroups = fixedGroupIds.size > 0;
 
   // Calculate risk distribution based on CONTEXTUALIZED risk scores
@@ -263,7 +267,7 @@ function Dashboard() {
           position: 'relative'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-            <span style={{ fontSize: '0.875rem', color: 'var(--cve-text-secondary)' }}>Exposure Score</span>
+            <span style={{ fontSize: '0.875rem', color: 'var(--cve-text-secondary)' }}>Unified Exposure Risk Score</span>
             <button
               onClick={() => setInfoModalType('exposure-score')}
               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center' }}
@@ -478,25 +482,31 @@ function Dashboard() {
 
           <Tile style={{ padding: '1.25rem', backgroundColor: '#161616', border: '1px solid #393939', position: 'relative' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>Detailed Score</span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>Operational Risk Score</span>
               <button
                 onClick={() => setInfoModalType('detailed-score')}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center' }}
-                title="How is Detailed Score calculated?"
+                title="How is Operational Risk Score calculated?"
               >
                 <Information size={14} style={{ color: 'var(--cve-text-secondary)' }} />
               </button>
             </div>
-            <div style={{
-              fontSize: '2.5rem',
-              fontWeight: 600,
-              color: (extendedSummary?.riskScore?.comprehensive || summary?.riskScore?.comprehensive || 0) >= 500 ? '#FA4D56' :
-                     (extendedSummary?.riskScore?.comprehensive || summary?.riskScore?.comprehensive || 0) >= 200 ? '#F1C21B' : '#42BE65'
-            }}>
-              {Math.round(extendedSummary?.riskScore?.comprehensive || summary?.riskScore?.comprehensive || 0)}
-            </div>
+            {(() => {
+              // Comprehensive score is already on 0-10 scale (same as concert)
+              const detailedScore = extendedSummary?.riskScore?.comprehensive || summary?.riskScore?.comprehensive || 0;
+              return (
+                <div style={{
+                  fontSize: '2.5rem',
+                  fontWeight: 600,
+                  color: detailedScore >= 7 ? '#FA4D56' :
+                         detailedScore >= 4 ? '#F1C21B' : '#42BE65'
+                }}>
+                  {detailedScore.toFixed(1)}<span style={{ fontSize: '1rem', color: 'var(--cve-text-secondary)' }}>/10</span>
+                </div>
+              );
+            })()}
             <div style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>
-              comprehensive analysis
+              operational context
             </div>
           </Tile>
         </div>

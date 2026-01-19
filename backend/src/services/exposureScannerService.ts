@@ -325,7 +325,7 @@ export async function runExposureScanning(
   };
 
   // 1. Start CVE scanning immediately
-  onProgress?.('Starting CVE vulnerability scan (npm audit, pip-audit, Trivy, Semgrep)...');
+  onProgress?.('Starting CVE vulnerability scan (npm audit, pip-audit, Trivy)...');
   const cves = await runCVEScanning(repoPath, languages, (msg) => {
     onProgress?.(msg);
   });
@@ -340,19 +340,23 @@ export async function runExposureScanning(
   }
 
   // 2. Start parallel scans AND CVE enrichment concurrently
-  onProgress?.('Enriching CVE data & scanning for other exposures in parallel...');
+  onProgress?.('Starting parallel security scans (certificates, secrets, misconfigs, licenses, SAST)...');
 
   // Run enrichment and other scanners in parallel for maximum speed
   const [enrichedCves, certResult, secretResult, misconfigResult, licenseResult, codeSecResult] = await Promise.all([
     // CVE Enrichment
     (async () => {
       const cveIdsToEnrich = cves.filter(cve => cve.id.startsWith('CVE-'));
-      if (cveIdsToEnrich.length === 0) return cves;
+      if (cveIdsToEnrich.length === 0) {
+        onProgress?.('CVE enrichment: Skipped (no CVE IDs to enrich)');
+        return cves;
+      }
 
       onProgress?.(`Enriching ${cveIdsToEnrich.length} CVEs with NVD/EPSS/KEV data...`);
       const enriched = await enrichCVEs(cveIdsToEnrich, (current, total) => {
         onProgress?.(`Enriching CVE data (${current}/${total})...`);
       });
+      onProgress?.(`CVE enrichment: Complete (${cveIdsToEnrich.length} CVEs enriched)`);
       return enriched;
     })(),
 
@@ -362,6 +366,8 @@ export async function runExposureScanning(
         const expiring = result.exposures.filter((e: any) => e.daysUntilExpiry <= 30).length;
         reportDiscovery('certificate', result.exposures.length,
           expiring > 0 ? `${expiring} expiring within 30 days` : 'none critical');
+      } else {
+        onProgress?.('Certificate scan: Complete (no issues found)');
       }
       return result;
     }),
@@ -372,6 +378,8 @@ export async function runExposureScanning(
         const types = [...new Set(result.exposures.map((e: any) => e.secretType || 'unknown'))];
         reportDiscovery('hardcoded secret', result.exposures.length,
           `types: ${types.slice(0, 3).join(', ')}${types.length > 3 ? '...' : ''}`);
+      } else {
+        onProgress?.('Secret scan: Complete (no hardcoded secrets found)');
       }
       return result;
     }),
@@ -382,6 +390,8 @@ export async function runExposureScanning(
         const resources = [...new Set(result.exposures.map((e: any) => e.resourceType || 'unknown'))];
         reportDiscovery('misconfiguration', result.exposures.length,
           `in ${resources.slice(0, 3).join(', ')}${resources.length > 3 ? '...' : ''}`);
+      } else {
+        onProgress?.('Misconfiguration scan: Complete (no issues found)');
       }
       return result;
     }),
@@ -392,6 +402,8 @@ export async function runExposureScanning(
         const licenses = [...new Set(result.exposures.map((e: any) => e.license || 'unknown'))];
         reportDiscovery('license', result.exposures.length,
           `problematic: ${licenses.slice(0, 3).join(', ')}${licenses.length > 3 ? '...' : ''}`);
+      } else {
+        onProgress?.('License scan: Complete (no problematic licenses found)');
       }
       return result;
     }),
@@ -402,6 +414,8 @@ export async function runExposureScanning(
         const issueTypes = [...new Set(result.exposures.map((e: any) => e.issueType || 'unknown'))];
         reportDiscovery('code security issue', result.exposures.length,
           `types: ${issueTypes.slice(0, 3).join(', ')}${issueTypes.length > 3 ? '...' : ''}`);
+      } else {
+        onProgress?.('SAST code scan: Complete (no security issues found)');
       }
       return result;
     })

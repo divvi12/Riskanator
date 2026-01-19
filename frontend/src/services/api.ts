@@ -1,10 +1,9 @@
 import axios from 'axios';
 import { ScanRequest, ScanResult } from '../types';
-
-const API_BASE = '/api';
+import { API_BASE_URL } from '../config';
 
 const api = axios.create({
-  baseURL: API_BASE,
+  baseURL: `${API_BASE_URL}/api`,
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json'
@@ -57,6 +56,15 @@ export async function deleteScan(scanId: string): Promise<void> {
 // Health check
 export async function checkHealth(): Promise<{ status: string; timestamp: string; version: string }> {
   const response = await api.get('/health');
+  return response.data;
+}
+
+// Recalculate scores with new application context
+export async function recalculateScores(exposures: any[], context: any): Promise<{
+  exposures: any[];
+  summary: any;
+}> {
+  const response = await api.post('/recalculate-scores', { exposures, context });
   return response.data;
 }
 

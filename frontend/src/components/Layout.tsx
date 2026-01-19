@@ -9,8 +9,7 @@ import {
   Tools,
   Settings,
   Demo,
-  Report,
-  RecentlyViewed
+  Report
 } from '@carbon/icons-react';
 import { useAppContext } from '../App';
 import GamificationSidebarWidget, { XPNotification, LevelUpModal } from './GamificationPanel';
@@ -96,14 +95,6 @@ function Layout({ children, onExitDemo, onEnterDemo }: LayoutProps) {
           >
             <Report />
             <span>Compliance</span>
-          </NavLink>
-
-          <NavLink
-            to="/app/history"
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          >
-            <RecentlyViewed />
-            <span>History</span>
           </NavLink>
 
           <NavLink

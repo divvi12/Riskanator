@@ -40,7 +40,7 @@ const STEPS = [
 
 function ScanSetup() {
   const navigate = useNavigate();
-  const { setCurrentScan, setApplicationContext, unfixExposuresFoundInScan } = useAppContext();
+  const { setCurrentScan, setApplicationContext, clearFixedState } = useAppContext();
 
   const [currentStep, setCurrentStep] = useState(0);
   const [isScanning, setIsScanning] = useState(false);
@@ -48,6 +48,7 @@ function ScanSetup() {
   const [scanLog, setScanLog] = useState<Array<{ time: string; message: string; type: 'info' | 'success' | 'warning' | 'error' }>>([]);
   const [detectedLanguages, setDetectedLanguages] = useState<string[]>([]);
   const [scanStartTime, setScanStartTime] = useState<Date | null>(null);
+  const lastLogMessage = useRef<string>('');
   const [error, setError] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -155,6 +156,22 @@ function ScanSetup() {
     setScanStartTime(new Date());
     setDetectedLanguages([]);
 
+    // Clear previous scan's fixed state and app context (preserve Gemini/ServiceNow settings)
+    clearFixedState();
+    const existingSettings = localStorage.getItem('concert-tem-settings');
+    if (existingSettings) {
+      try {
+        const parsed = JSON.parse(existingSettings);
+        // Remove appContext but keep other settings (Gemini, ServiceNow)
+        delete parsed.appContext;
+        delete parsed.riskFormula;
+        localStorage.setItem('concert-tem-settings', JSON.stringify(parsed));
+      } catch {
+        // If parsing fails, clear entirely
+        localStorage.removeItem('concert-tem-settings');
+      }
+    }
+
     const context: ApplicationContext = {
       appName: formData.appName || 'Unnamed Application',
       industry: formData.industry || 'other',
@@ -183,6 +200,8 @@ function ScanSetup() {
       context
     };
 
+    // Reset log tracking for new scan
+    lastLogMessage.current = '';
     addLogEntry('Starting scan...', 'info');
 
     try {
@@ -194,27 +213,58 @@ function ScanSetup() {
         (status, progress, message) => {
           setScanProgress({ status, progress, message });
 
-          // Determine log entry type based on message content
-          let type: 'info' | 'success' | 'warning' | 'error' = 'info';
-          if (message.includes('Found') || message.includes('complete')) type = 'success';
-          if (message.includes('WARNING') || message.includes('CISA')) type = 'warning';
-          if (message.includes('error') || message.includes('failed')) type = 'error';
+          // Only add log entry if message changed (avoid duplicates from polling)
+          if (message && message !== lastLogMessage.current) {
+            lastLogMessage.current = message;
 
-          addLogEntry(message, type);
+            // Determine log entry type based on message content
+            let type: 'info' | 'success' | 'warning' | 'error' = 'info';
+            if (message.includes('Found') || message.includes('complete')) type = 'success';
+            if (message.includes('WARNING') || message.includes('CISA')) type = 'warning';
+            if (message.includes('error') || message.includes('failed')) type = 'error';
+
+            addLogEntry(message, type);
+          }
         }
       );
 
       addLogEntry('Scan completed successfully!', 'success');
 
-      // Resurface any previously-fixed exposures that appear in this scan
-      // This ensures exposures aren't hidden if they weren't actually fixed
-      if (result.exposures && result.exposures.length > 0) {
-        const foundExposureIds = result.exposures.map((e: any) => e.id);
-        unfixExposuresFoundInScan(foundExposureIds);
-      }
-
       setCurrentScan(result);
       setApplicationContext(context);
+
+      // Save application context to localStorage so Settings page shows wizard values
+      const settingsToSave = {
+        appContext: {
+          criticality: context.criticality,
+          dataSensitivity: {
+            pci: context.dataSensitivity.pci,
+            phi: context.dataSensitivity.phi,
+            pii: context.dataSensitivity.pii,
+          },
+          networkExposure: context.accessControls.networkExposure,
+          publicEndpoints: context.accessControls.publicEndpoints,
+          privateEndpoints: context.accessControls.privateEndpoints,
+          requiresAuth: context.accessControls.controls?.includes('mfa') || false
+        },
+        riskFormula: context.formula
+      };
+      // Preserve existing settings (Gemini, ServiceNow) while updating app context
+      const existingSettings = localStorage.getItem('concert-tem-settings');
+      if (existingSettings) {
+        try {
+          const parsed = JSON.parse(existingSettings);
+          localStorage.setItem('concert-tem-settings', JSON.stringify({
+            ...parsed,
+            ...settingsToSave
+          }));
+        } catch {
+          localStorage.setItem('concert-tem-settings', JSON.stringify(settingsToSave));
+        }
+      } else {
+        localStorage.setItem('concert-tem-settings', JSON.stringify(settingsToSave));
+      }
+
       saveToHistory(result);
       navigate('/app/dashboard');
     } catch (err) {

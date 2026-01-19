@@ -32,7 +32,7 @@ const scoreInfo: Record<ScoreType, {
   sources?: string[];
 }> = {
   'exposure-score': {
-    title: 'Overall Exposure Score',
+    title: 'Unified Exposure Risk Score',
     description: 'The main risk indicator combining all exposure types into a single 0-10 score using weighted maximum aggregation. This score represents your application\'s overall security posture.',
     formula: `Overall = (
   MaxScore × 0.4 +
@@ -62,56 +62,61 @@ const scoreInfo: Record<ScoreType, {
 
   'concert-score': {
     title: 'Concert Score (Executive Summary)',
-    description: 'A quick-glance risk score optimized for executive reporting. Uses weighted aggregation prioritizing the most dangerous exposure types.',
+    description: 'A quick-glance risk score optimized for executive reporting. Uses weighted maximum aggregation to ensure the worst findings drive the score while accounting for volume.',
     formula: `Concert = (
-  MaxCritical × 0.4 +
+  MaxScore × 0.4 +
   AvgTop5Critical × 0.3 +
   AvgTop10High × 0.2 +
   log₁₀(n) × 2
 ) ÷ 10`,
     factors: [
-      { name: 'Secrets', description: 'Hardcoded credentials (highest risk)', values: '3.0× weight' },
-      { name: 'CVEs', description: 'Known vulnerabilities', values: '2.0× weight' },
-      { name: 'Certificates', description: 'Expiring/weak certificates', values: '1.5× weight' },
-      { name: 'Misconfigurations', description: 'IaC security issues', values: '1.5× weight' },
-      { name: 'Code Security', description: 'SAST findings', values: '1.2× weight' },
-      { name: 'Licenses', description: 'Legal/compliance issues', values: '0.8× weight' },
-      { name: 'CISA KEV Boost', description: 'Known exploited vulnerabilities', values: '+50% weight' },
-      { name: 'Verified Secrets Boost', description: 'Confirmed active credentials', values: '+30% weight' }
+      { name: 'Highest Score', description: 'The single worst exposure drives 40%', values: '40% weight' },
+      { name: 'Top 5 Critical', description: 'Average of top 5 critical exposures (≥90)', values: '30% weight' },
+      { name: 'Top 10 High', description: 'Average of top 10 high exposures (70-89)', values: '20% weight' },
+      { name: 'Volume Penalty', description: 'More exposures = higher risk (diminishing)', values: 'log₁₀(n) × 2' }
     ],
     scale: '0-10 scale for executive dashboards',
+    examples: [
+      { scenario: '75 exposures (21 Critical, 49 High)', calculation: '(100×0.4 + 97×0.3 + 75×0.2 + 3.75) ÷ 10', result: '8.8/10' },
+      { scenario: '5 medium exposures only', calculation: '(55×0.4 + 0×0.3 + 0×0.2 + 1.4) ÷ 10', result: '2.3/10' }
+    ],
     sources: [
       'IBM Concert Methodology',
-      'Snyk Risk Score',
-      'Rapid7 Active Risk',
+      'Tenable VPR (Vulnerability Priority Rating)',
+      'Qualys TruRisk',
       'FIRST CVSS Special Interest Group'
     ]
   },
 
   'detailed-score': {
-    title: 'Detailed Score (Comprehensive Analysis)',
-    description: 'An in-depth risk score considering multiple factors including exploitability, attack surface diversity, SLA urgency, and compliance impact.',
-    formula: `Detailed = Average of:
-  • Severity Distribution (0-10)
-  • Attack Surface Diversity (0-10)
-  • Exploitability via EPSS (0-10)
-  • SLA Urgency (0-10)
-  • Secrets Exposure (0-10)
-  • Certificate Health (0-10)`,
+    title: 'Operational Risk Score',
+    description: 'A nuanced risk score that builds on the Concert Score by adding factors for real-world exploitability, attack surface diversity, SLA compliance urgency, and severity concentration. This score better reflects operational risk and is designed for security operations teams.',
+    formula: `Operational = Concert Score
+  + EPSS Factor (exploitation probability)
+  + KEV Factor (actively exploited CVEs)
+  + Diversity Penalty (exposure type breadth)
+  + SLA Factor (overdue items urgency)
+  + Critical Concentration (severity distribution)
+
+Capped at 10`,
     factors: [
-      { name: 'Severity Distribution', description: 'Weighted count: Critical×2.5 + High×1.5 + Medium×0.5', values: '0-10' },
-      { name: 'Attack Surface Diversity', description: 'Number of exposure types × 1.5', values: '0-10' },
-      { name: 'EPSS Exploitability', description: 'Average EPSS × 10 + KEV count × 2', values: '0-10' },
-      { name: 'SLA Urgency', description: '(Overdue × 3 + DueSoon × 1) / total × 10', values: '0-10' },
-      { name: 'Secrets Risk', description: 'Secrets × 2 + Verified × 3', values: '0-10' },
-      { name: 'Certificate Health', description: 'Expired × 5 + Expiring30d × 2', values: '0-10' }
+      { name: 'EPSS Factor', description: 'High exploitation probability (>10%) weighted ×1.5, else ×0.5', values: 'avgEPSS × 0.5-1.5' },
+      { name: 'KEV Factor', description: 'Proportion of CVEs actively exploited', values: '(kevCount/cves) × 2' },
+      { name: 'Diversity Penalty', description: 'Broader attack surface = more risk', values: '(types-1) × 0.2' },
+      { name: 'SLA Factor', description: 'Overdue items increase urgency', values: '(overdue/total) × 1.5' },
+      { name: 'Critical Concentration', description: 'High proportion of critical = more risk', values: '(critical/total) × 0.5' }
     ],
-    scale: '0-10 (multiply by 100 for 0-1000 display)',
+    scale: '0-10 (typically 0.5-2.0 points higher than Concert Score)',
+    examples: [
+      { scenario: 'High EPSS (30%), 2 KEVs in 10 CVEs, 3 types, 10% overdue, 20% critical', calculation: 'Concert + 0.45 + 0.4 + 0.4 + 0.15 + 0.1', result: '+1.5 over Concert' },
+      { scenario: 'Low EPSS (1%), no KEVs, 1 type, on track, no criticals', calculation: 'Concert + 0.01 + 0 + 0 + 0 + 0', result: '~Same as Concert' }
+    ],
     sources: [
+      'FIRST EPSS (Exploit Prediction Scoring System)',
+      'CISA Known Exploited Vulnerabilities',
       'NIST SP 800-30 Risk Management Guide',
       'OWASP Risk Rating Methodology',
       'ISO 27005 Information Security Risk Management',
-      'FAIR (Factor Analysis of Information Risk)',
       'CISA Stakeholder-Specific Vulnerability Categorization (SSVC)'
     ]
   },
@@ -193,29 +198,39 @@ const scoreInfo: Record<ScoreType, {
   },
 
   'cve-score': {
-    title: 'CVE Risk Score',
-    description: 'Individual CVE scoring based on CVSS, EPSS exploit probability, and CISA KEV status.',
-    formula: `CVE_Score = (CVSS × 2.5) + (EPSS × 35) + (KEV ? 40 : 0)
+    title: 'Concert CVE Risk Score (Formula 1)',
+    description: 'IBM Concert methodology for CVE scoring using equilibrium-based EPSS where 0.1 (10%) is the neutral point. Values above 0.1 increase risk, below 0.1 decrease it. Score is capped at 10.',
+    formula: `Concert CVE Score = Severity × Exploitability Factor × Environmental Factor
 
-If KEV = true: Score = 100 (automatic Critical)`,
+Where:
+• Severity: CVSS score (0-10), with fallback for missing CVSS
+• Exploitability: EPSS-based factor (0.5-1.25), equilibrium at EPSS=0.1
+• Environmental: Context-based factor (0.25-1.25)`,
     factors: [
-      { name: 'CVSS', description: 'Base severity 0-10 → 0-25 points', values: '× 2.5' },
-      { name: 'EPSS', description: 'Exploit probability 0-1 → 0-35 points', values: '× 35' },
-      { name: 'CISA KEV', description: 'Known exploited = automatic 100', values: '+40 or auto-100' }
+      { name: 'CVSS (Severity)', description: 'Base technical severity from NVD', values: '0.1-10.0' },
+      { name: 'EPSS 0.0001-0.001', description: 'Very low exploitation probability', values: '× 0.5 (-50%)' },
+      { name: 'EPSS 0.001-0.02', description: 'Low exploitation probability', values: '× 0.6 (-40%)' },
+      { name: 'EPSS 0.1-0.2', description: 'Equilibrium (neutral effect)', values: '× 1.0 (neutral)' },
+      { name: 'EPSS 0.4-0.6', description: 'High exploitation probability', values: '× 1.2 (+20%)' },
+      { name: 'EPSS 0.9-1.0', description: 'Very high exploitation probability', values: '× 1.25 (+25%)' },
+      { name: 'App Criticality', description: 'Tier 1-5 business importance', values: '0.20-1.25' },
+      { name: 'Data Sensitivity', description: 'Level 1-5 data classification', values: '0.20-1.25' },
+      { name: 'Access Points', description: 'Public (1-16+) or Private (1-4)', values: '0.25-1.25' }
     ],
-    scale: '0-100',
+    scale: '0.1-10.0 (Low: <4, Medium: 4-6.9, High: 7-8.9, Critical: ≥9)',
     examples: [
-      { scenario: 'Log4Shell (CVSS 10, EPSS 0.89, KEV)', calculation: 'Auto KEV', result: '100 (Critical)' },
-      { scenario: 'Medium CVE (CVSS 6, EPSS 0.05)', calculation: '6×2.5 + 0.05×35', result: '16.75 (Low)' }
+      { scenario: 'Critical CVE (CVSS 9.1, EPSS 0.45, Level 5 app)', calculation: '9.1 × 1.2 × 1.21', result: '10.0 (capped)' },
+      { scenario: 'Medium CVE (CVSS 6, EPSS 0.15, Level 3 app)', calculation: '6.0 × 1.0 × 0.85', result: '5.1' },
+      { scenario: 'Low CVE (CVSS 4, EPSS 0.005, Level 2 app)', calculation: '4.0 × 0.6 × 0.45', result: '1.08' }
     ],
     sources: [
+      'IBM Concert Risk Methodology',
       'NIST NVD (National Vulnerability Database)',
       'FIRST CVSS v3.1 Specification',
       'FIRST EPSS (Exploit Prediction Scoring System)',
       'CISA Known Exploited Vulnerabilities',
-      'Tenable VPR Formula Research',
-      'Cyentia Institute EPSS Analysis',
-      'Kenna Security Risk-Based Prioritization'
+      'Cyentia Institute EPSS Research',
+      'Tenable VPR Formula Research'
     ]
   },
 
@@ -335,62 +350,88 @@ If KEV = true: Score = 100 (automatic Critical)`,
   },
 
   'code-security-score': {
-    title: 'Code Security Risk Score',
-    description: 'SAST findings scored by CWE severity, detection confidence, and code reachability.',
-    formula: 'CodeSec_Score = CWESeverity × Confidence × Reachability',
+    title: 'Concert Exposure Risk Score (Formula 2)',
+    description: 'SAST/DAST findings scored using IBM Concert methodology. Score = Severity × Environmental Factor. No EPSS factor as these are code-level findings without CVE identifiers.',
+    formula: `Concert Exposure Score = Severity × Environmental Factor
+
+SAST Severity (5-tier scale):
+• Blocker/Critical: 10.0
+• High: 7.5
+• Medium: 5.0
+• Low: 2.5
+• Info: 1.0
+
+DAST Severity (15-tier with confidence):
+• High (High): 9.18
+• High: 6.84
+• Medium: 3.80
+• Low: 0.76`,
     factors: [
-      { name: 'SQL Injection', description: 'CWE-89', values: '90 base' },
-      { name: 'Command Injection', description: 'CWE-78', values: '90 base' },
-      { name: 'XSS', description: 'CWE-79', values: '85 base' },
-      { name: 'Path Traversal', description: 'CWE-22', values: '75 base' },
-      { name: 'Weak Crypto', description: 'CWE-327', values: '60 base' },
-      { name: 'High Confidence', description: 'Definite finding', values: '× 1.0' },
-      { name: 'Medium Confidence', description: 'Likely finding', values: '× 0.8' },
-      { name: 'Low Confidence', description: 'Possible finding', values: '× 0.5' },
-      { name: 'Public Endpoint', description: 'User-facing code', values: '× 1.3' },
-      { name: 'Dead Code', description: 'Unreachable code', values: '× 0.3' }
+      { name: 'SAST Blocker/Critical', description: 'Definite security issue', values: '10.0' },
+      { name: 'SAST High', description: 'Significant security issue', values: '7.5' },
+      { name: 'SAST Medium', description: 'Moderate security issue', values: '5.0' },
+      { name: 'DAST High (High)', description: 'High severity with high confidence', values: '9.18' },
+      { name: 'DAST Medium (Medium)', description: 'Medium severity with medium confidence', values: '5.32' },
+      { name: 'App Criticality', description: 'Tier 1-5 business importance', values: '0.20-1.25' },
+      { name: 'Data Sensitivity', description: 'Level 1-5 data classification', values: '0.20-1.25' },
+      { name: 'Access Points', description: 'Public or Private access', values: '0.25-1.25' }
     ],
-    scale: '0-100',
+    scale: '1-10 (SAST findings have coarser granularity, DAST finer)',
     examples: [
-      { scenario: 'SQLi in login API, high confidence', calculation: '90 × 1.0 × 1.3', result: '100 (capped)' }
+      { scenario: 'SAST High in Level 5 app, 2 public', calculation: '7.5 × 1.13', result: '8.5' },
+      { scenario: 'DAST High (High) in Level 3 app', calculation: '9.18 × 0.85', result: '7.8' },
+      { scenario: 'SAST Medium in Level 2 app', calculation: '5.0 × 0.45', result: '2.25' }
     ],
     sources: [
+      'IBM Concert Risk Methodology',
       'OWASP Top 10 (2021)',
       'CWE Top 25 Most Dangerous Software Weaknesses',
-      'SANS Top 25 Software Errors',
+      'Semgrep Rule Registry',
       'SonarQube Security Rules',
       'Checkmarx CxSAST Severity Model',
       'Veracode Severity Ratings',
-      'Semgrep Rule Registry',
-      'CodeQL Security Queries'
+      'OWASP ZAP DAST Findings'
     ]
   },
 
   'aggregate-score': {
-    title: 'Aggregate Application Risk Score',
-    description: 'The unified score combining all exposures using weighted maximum with diminishing returns.',
-    formula: `ApplicationRisk = min(100,
-  Highest × 0.4 +
-  AvgTop5Critical × 0.3 +
-  AvgTop10High × 0.2 +
-  log₁₀(total + 1) × 2
-)`,
+    title: 'Unified Exposure Risk Score (Formula 3)',
+    description: 'Comprehensive scoring for all exposure types (CVEs, Secrets, Certs, Misconfigs, Licenses, Code) on a unified 0-100 scale. Uses weighted maximum aggregation with environmental multiplier.',
+    formula: `Unified Score = Base_Score × Environmental_Multiplier
+
+Base Score by Type:
+• CVE: (CVSS × 2.5) + (EPSS × 35) + (KEV ? 40 : 0)
+• Secret: Type × Validity × Context
+• Certificate: max(0, 100 - days/1.8) × AlgoMod × TypeMod
+• Misconfiguration: Severity × Exposure × Data
+• License: RiskTier × Distribution
+• Code Security: CWE × Confidence × Reachability
+
+Application Risk Aggregation:
+  Highest × 0.4 + AvgTop5Critical × 0.3 +
+  AvgTop10High × 0.2 + log₁₀(n) × 2`,
     factors: [
-      { name: 'Environmental Multiplier', description: 'Applied to each exposure', values: '∛(Asset × Data × Network)' },
-      { name: 'Asset Criticality', description: 'Tier 1-5 business importance', values: '0.6 - 1.5' },
-      { name: 'Data Sensitivity', description: 'Public to Restricted (PII/PHI)', values: '0.7 - 1.4' },
-      { name: 'Network Exposure', description: 'Air-gapped to Internet-facing', values: '0.6 - 1.5' }
+      { name: 'Environmental Multiplier', description: 'Cube root prevents single factor dominance', values: '∛(Asset × Data × Network)' },
+      { name: 'Asset Criticality', description: 'Mission-Critical to Non-Critical', values: '0.6 - 1.5' },
+      { name: 'Data Sensitivity', description: 'Public to Restricted (PII/PHI/PCI)', values: '0.7 - 1.4' },
+      { name: 'Network Exposure', description: 'Air-gapped to Internet-facing', values: '0.6 - 1.5' },
+      { name: 'Weighted Maximum', description: 'Highest exposure dominates', values: '40% weight' },
+      { name: 'Volume Penalty', description: 'More exposures = higher risk', values: 'log₁₀(n) × 2' }
     ],
-    scale: '0-100',
+    scale: '0-100 (Critical: ≥90, High: 70-89, Medium: 40-69, Low: <40)',
+    examples: [
+      { scenario: 'Log4Shell KEV', calculation: 'Auto 100 (KEV)', result: '100' },
+      { scenario: 'Medium CVE (CVSS 6, EPSS 0.05)', calculation: '6×2.5 + 0.05×35', result: '16.75' },
+      { scenario: 'AWS key, verified, prod', calculation: '95 × 1.0 × 1.2', result: '100 (capped)' }
+    ],
     sources: [
+      'IBM Concert Unified Exposure Methodology',
       'Tenable VPR (Vulnerability Priority Rating)',
       'Qualys TruRisk Scoring',
       'MAGERIT Bayesian Aggregation Model',
       'Cyentia Institute Research',
-      'Kenna Security Risk Meter',
       'FAIR (Factor Analysis of Information Risk)',
-      'NIST SP 800-30 Risk Aggregation',
-      'RiskLens Quantitative Cyber Risk'
+      'NIST SP 800-30 Risk Aggregation'
     ]
   }
 };

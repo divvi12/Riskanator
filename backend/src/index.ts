@@ -12,7 +12,12 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'https://concert-tem-frontend.25bete04mfc7.eu-gb.codeengine.appdomain.cloud',
+    /\.codeengine\.appdomain\.cloud$/  // Allow all Code Engine subdomains
+  ],
   credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));

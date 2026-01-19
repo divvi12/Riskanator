@@ -1,11 +1,152 @@
 // ============================================================
-// UNIFIED EXPOSURE RISK SCORING CONFIGURATION
-// All scoring multipliers and constants for the 0-100 scale
+// IBM CONCERT RISK SCORING CONFIGURATION
+// Three-Tier Risk Scoring Framework
+// - Formula 1: Concert CVE Risk Score (0.1-10)
+// - Formula 2: Concert Exposure Risk Score for SAST/DAST (1-10)
+// - Formula 3: Unified Exposure Risk Score (0-100)
 // ============================================================
 
 // ============================================================
-// CVE SCORING CONFIGURATION
-// Formula: (CVSS × 2.5) + (EPSS × 35) + (KEV ? 40 : 0)
+// FORMULA 1: CONCERT CVE RISK SCORE (0.1-10)
+// Score = Severity × Exploitability Factor × Environmental Factor
+// Uses equilibrium-based scoring where EPSS=0.1 has neutral effect
+// ============================================================
+
+/**
+ * EPSS to Exploitability Factor mapping
+ * Equilibrium point: EPSS = 0.1 (10% exploitation probability)
+ * - Values at 0.1 have neutral effect (multiplier = 1.0)
+ * - Values above 0.1 increase the risk score
+ * - Values below 0.1 decrease the risk score
+ */
+export const EPSS_EXPLOITABILITY_FACTOR = {
+  // [minEPSS, maxEPSS]: factor
+  ranges: [
+    { min: 0.0001, max: 0.001, factor: 0.5 },   // Very low exploitability (-50%)
+    { min: 0.001, max: 0.02, factor: 0.6 },     // -40%
+    { min: 0.02, max: 0.05, factor: 0.7 },      // -30%
+    { min: 0.05, max: 0.1, factor: 0.8 },       // -20%
+    { min: 0.1, max: 0.2, factor: 1.0 },        // EQUILIBRIUM (neutral)
+    { min: 0.2, max: 0.4, factor: 1.1 },        // +10%
+    { min: 0.4, max: 0.6, factor: 1.2 },        // +20%
+    { min: 0.6, max: 0.9, factor: 1.23 },       // +23%
+    { min: 0.9, max: 1.0, factor: 1.25 },       // +25% (very high exploitability)
+  ],
+  default: 1.0,       // Default if EPSS unavailable
+  minimum: 0.5,       // Floor
+  maximum: 1.25,      // Ceiling
+} as const;
+
+/**
+ * Application Criticality (Formula 1)
+ * Equilibrium: Level 3.5 (between Medium and High)
+ * - Level 5 (Very High): +47% above equilibrium
+ * - Level 3 (Medium): -15% below equilibrium
+ * - Level 1 (Very Low): -80% below equilibrium
+ */
+export const APP_CRITICALITY_F1 = {
+  5: 1.25,   // Very High - Mission-critical systems
+  4: 1.10,   // High - Business-critical systems
+  3: 0.85,   // Medium - Business-important (equilibrium at 3.5)
+  2: 0.45,   // Low - Business-support
+  1: 0.20,   // Very Low - Non-critical
+} as Record<number, number>;
+
+/**
+ * Data Sensitivity (Formula 1)
+ * Equilibrium: Level 3.5 (between Medium and High)
+ * Same rationale as Application Criticality
+ */
+export const DATA_SENSITIVITY_F1 = {
+  5: 1.25,   // Very High - PHI, PCI, classified
+  4: 1.10,   // High - PII, trade secrets
+  3: 0.85,   // Medium - Internal business info
+  2: 0.45,   // Low - Operational data
+  1: 0.20,   // Very Low - Public data
+} as Record<number, number>;
+
+/**
+ * Public Access Points (Formula 1)
+ * Equilibrium: 1 public access point
+ * Logarithmic increase with diminishing returns
+ */
+export const PUBLIC_ACCESS_POINTS = {
+  1: 1.00,    // Baseline (equilibrium)
+  2: 1.09,    // +9%
+  3: 1.14,    // +5%
+  4: 1.16,    // +2%
+  5: 1.172,   // +1.2%
+  6: 1.185,   // +1.3%
+  7: 1.195,   // +1.0%
+  8: 1.214,   // +1.9%
+  9: 1.222,   // +0.8%
+  10: 1.229,  // +0.7%
+  11: 1.235,  // +0.6%
+  12: 1.240,  // +0.5%
+  13: 1.244,  // +0.4%
+  14: 1.247,  // +0.3%
+  15: 1.249,  // +0.2%
+  16: 1.25,   // Maximum cap
+} as Record<number, number>;
+
+/**
+ * Private Access Points (Formula 1)
+ * Only used if NO public access exists
+ */
+export const PRIVATE_ACCESS_POINTS = {
+  1: 0.25,   // Minimal (internal-only, single path)
+  2: 0.50,   // Low (limited internal exposure)
+  3: 0.75,   // Moderate (broader internal access)
+  4: 1.00,   // Standard internal exposure
+} as Record<number, number>;
+
+// ============================================================
+// FORMULA 2: CONCERT EXPOSURE RISK SCORE (1-10)
+// For SAST/DAST findings
+// Score = Severity × Environmental Factor (no EPSS)
+// ============================================================
+
+/**
+ * DAST (Dynamic Application Security Testing) Severity
+ * 15-tier graduated scale with confidence levels
+ * Increment: 0.76 per level
+ */
+export const DAST_SEVERITY = {
+  'BLOCKER': 10.00,
+  'CRITICAL': 10.00,
+  'Error': 10.00,
+  'High (High)': 9.18,
+  'High (Medium)': 8.36,
+  'High (Low)': 7.60,
+  'High': 6.84,
+  'Medium (High)': 6.08,
+  'Medium (Medium)': 5.32,
+  'Medium (Low)': 4.56,
+  'Medium': 3.80,
+  'Low (High)': 3.04,
+  'Low (Medium)': 2.28,
+  'Low (Low)': 1.52,
+  'Low': 0.76,
+  'Info': 0.50,
+} as Record<string, number>;
+
+/**
+ * SAST (Static Application Security Testing) Severity
+ * 5-tier scale for code-level security findings
+ * Increment: 2.50 per level
+ */
+export const SAST_SEVERITY = {
+  'Blocker': 10.00,
+  'Critical': 10.00,
+  'High': 7.50,
+  'Medium': 5.00,
+  'Low': 2.50,
+  'Info': 1.00,
+} as Record<string, number>;
+
+// ============================================================
+// FORMULA 3: UNIFIED EXPOSURE RISK SCORE (0-100)
+// CVE: (CVSS × 2.5) + (EPSS × 35) + (KEV ? 40 : 0)
 // KEV automatically scores 100
 // ============================================================
 export const CVE_SCORING = {
@@ -13,6 +154,10 @@ export const CVE_SCORING = {
   epssMultiplier: 35,       // EPSS 0-1 → 0-35 points
   kevBonus: 40,             // KEV adds 40 points
   kevAutoScore: 100,        // KEV = automatic Critical (100)
+  // Fallback for missing CVSS
+  newCveThresholdDays: 60,  // CVEs modified within 60 days
+  newCveDefaultScore: 10.0, // Assume critical for new CVEs
+  oldCveDefaultScore: 5.0,  // Medium severity default
 } as const;
 
 // ============================================================

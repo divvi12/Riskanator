@@ -210,6 +210,103 @@ router.get('/exposure-scans', (req: Request, res: Response) => {
   res.json(scans);
 });
 
+// Recalculate scores with new application context
+router.post('/recalculate-scores', async (req: Request, res: Response) => {
+  const { exposures, context } = req.body;
+
+  if (!exposures || !Array.isArray(exposures)) {
+    return res.status(400).json({ error: 'Exposures array is required' });
+  }
+
+  try {
+    // Import the recalculation functions
+    const { processExposures, applySLAToExposures, calculateOverallConcertScore, calculateOverallDetailedScore } = await import('../services/exposureRiskService');
+
+    // Ensure all exposures have required fields
+    const normalizedExposures = exposures.map(exp => ({
+      ...exp,
+      detectedAt: exp.detectedAt || new Date().toISOString(),
+      severity: exp.severity || 'medium',
+      type: exp.type || 'cve'
+    }));
+
+    // Build full ApplicationContext from frontend context
+    const appContext = context ? {
+      appName: 'Application',
+      industry: 'Technology',
+      purpose: 'General',
+      criticality: context.criticality || 3,
+      dataSensitivity: {
+        pii: context.dataSensitivity?.pii || false,
+        phi: context.dataSensitivity?.phi || false,
+        pci: context.dataSensitivity?.pci || false,
+        tradeSecrets: false
+      },
+      accessControls: {
+        publicEndpoints: context.publicEndpoints || 0,
+        privateEndpoints: context.privateEndpoints || 5,
+        networkExposure: (context.networkExposure || 'internal') as 'internal' | 'dmz' | 'public',
+        controls: context.requiresAuth !== false ? ['authentication'] : []
+      },
+      formula: 'concert' as const
+    } : undefined;
+
+    // Recalculate risk scores for each exposure with new context
+    const recalculatedExposures = processExposures(normalizedExposures, appContext);
+
+    // Apply SLA calculations
+    const exposuresWithSLA = applySLAToExposures(recalculatedExposures, appContext);
+
+    // Calculate overall scores
+    const concertScore = calculateOverallConcertScore(exposuresWithSLA);
+    const detailedScore = calculateOverallDetailedScore(exposuresWithSLA);
+
+    // Generate updated summary
+    const byType = { cve: 0, certificate: 0, secret: 0, misconfiguration: 0, license: 0, codeSecurity: 0 };
+    const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
+    const slaStatus = { overdue: 0, dueSoon: 0, onTrack: 0, complianceRate: 0 };
+
+    for (const exposure of exposuresWithSLA) {
+      // Count by type
+      if (exposure.type === 'cve') byType.cve++;
+      else if (exposure.type === 'certificate') byType.certificate++;
+      else if (exposure.type === 'secret') byType.secret++;
+      else if (exposure.type === 'misconfiguration') byType.misconfiguration++;
+      else if (exposure.type === 'license') byType.license++;
+      else if (exposure.type === 'code-security') byType.codeSecurity++;
+
+      // Count by severity
+      bySeverity[exposure.severity]++;
+
+      // Count SLA status
+      if (exposure.slaStatus === 'overdue') slaStatus.overdue++;
+      else if (exposure.slaStatus === 'due_soon') slaStatus.dueSoon++;
+      else slaStatus.onTrack++;
+    }
+
+    slaStatus.complianceRate = exposuresWithSLA.length > 0
+      ? Math.round(((exposuresWithSLA.length - slaStatus.overdue) / exposuresWithSLA.length) * 100)
+      : 100;
+
+    res.json({
+      exposures: exposuresWithSLA,
+      summary: {
+        totalExposures: exposuresWithSLA.length,
+        critical: bySeverity.critical,
+        high: bySeverity.high,
+        medium: bySeverity.medium,
+        low: bySeverity.low,
+        riskScore: { concert: concertScore, comprehensive: detailedScore },
+        byType,
+        slaStatus
+      }
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Recalculation failed';
+    res.status(500).json({ error: errorMessage });
+  }
+});
+
 // Async exposure scan processing
 async function processExposureScan(
   scanId: string,
