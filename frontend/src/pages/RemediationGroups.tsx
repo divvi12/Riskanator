@@ -78,11 +78,12 @@ function calculateScoreImprovement(
 
 function RemediationGroups() {
   const navigate = useNavigate();
-  const { isDemoMode, currentScan, recordFix } = useAppContext();
+  const { isDemoMode, currentScan, recordFix, fixedGroupIds, markGroupFixed } = useAppContext();
   const [selectedGroup, setSelectedGroup] = useState<ExtendedRemediationGroup | null>(null);
   const [showServiceNowModal, setShowServiceNowModal] = useState(false);
   const [selectedForIncident, setSelectedForIncident] = useState<ExtendedRemediationGroup | null>(null);
-  const [fixedGroups, setFixedGroups] = useState<Set<string>>(new Set());
+
+  // Use fixedGroupIds from context (shared with Dashboard)
 
   // Get remediation groups from demo or real scan
   const remediationGroups: ExtendedRemediationGroup[] = isDemoMode
@@ -122,7 +123,7 @@ function RemediationGroups() {
   // Handle marking a group as fixed
   const handleMarkFixed = (group: ExtendedRemediationGroup, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (fixedGroups.has(group.id)) return;
+    if (fixedGroupIds.has(group.id)) return;
 
     // Get exposures for this group and record each fix
     const groupExposures = getGroupExposures(group);
@@ -130,14 +131,15 @@ function RemediationGroups() {
       recordFix(exposure.severity, exposure.type);
     });
 
-    // Mark group as fixed
-    setFixedGroups(prev => new Set([...prev, group.id]));
+    // Mark group as fixed in context (shared with Dashboard and ExposuresList)
+    // Pass exposure IDs so they can be filtered from the exposures list
+    markGroupFixed(group.id, group.riskReduction, group.exposures);
   };
 
   // Calculate total potential XP based on score reduction
   // Each point of score reduction = 100 XP
   const totalPotentialXP = remediationGroups
-    .filter(g => !fixedGroups.has(g.id))
+    .filter(g => !fixedGroupIds.has(g.id))
     .reduce((sum, g) => {
       const scoreImp = calculateScoreImprovement(currentExposureScore, g.riskReduction);
       return sum + scoreImp.xpReward;
@@ -258,7 +260,7 @@ function RemediationGroups() {
             +{totalPotentialXP.toLocaleString()}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>
-            {fixedGroups.size} of {remediationGroups.length} groups fixed
+            {fixedGroupIds.size} of {remediationGroups.length} groups fixed
           </div>
         </Tile>
       </div>
@@ -387,7 +389,7 @@ function RemediationGroups() {
 
                     {/* Action Buttons */}
                     <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
-                      {!fixedGroups.has(group.id) && (
+                      {!fixedGroupIds.has(group.id) && (
                         <Button
                           kind="primary"
                           size="sm"
@@ -399,7 +401,7 @@ function RemediationGroups() {
                         </Button>
                       )}
                       <Button
-                        kind={fixedGroups.has(group.id) ? 'ghost' : 'secondary'}
+                        kind={fixedGroupIds.has(group.id) ? 'ghost' : 'secondary'}
                         size="sm"
                         onClick={(e: React.MouseEvent) => {
                           e.stopPropagation();
@@ -420,10 +422,10 @@ function RemediationGroups() {
                     justifyContent: 'center',
                     padding: '1.5rem',
                     minWidth: '140px',
-                    backgroundColor: fixedGroups.has(group.id) ? 'rgba(66, 190, 101, 0.1)' : 'rgba(66, 190, 101, 0.05)',
+                    backgroundColor: fixedGroupIds.has(group.id) ? 'rgba(66, 190, 101, 0.1)' : 'rgba(66, 190, 101, 0.05)',
                     borderLeft: '1px solid var(--cve-border)'
                   }}>
-                    {!fixedGroups.has(group.id) ? (
+                    {!fixedGroupIds.has(group.id) ? (
                       <>
                         <div style={{ fontSize: '0.6875rem', color: 'var(--cve-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>
                           Score Drop

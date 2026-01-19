@@ -153,7 +153,7 @@ function ChallengeCard({ challenge }: { challenge: any }) {
 }
 
 function Dashboard() {
-  const { currentScan, isDemoMode, applicationContext, userProgress, challenges } = useAppContext();
+  const { currentScan, isDemoMode, applicationContext, userProgress, challenges, totalRiskReduction, fixedGroupIds } = useAppContext();
   const navigate = useNavigate();
   const { showSuccess } = useNotifications();
   const [isLoading, setIsLoading] = useState(false);
@@ -198,6 +198,13 @@ function Dashboard() {
   // Get extended scan data (from demo or real scan)
   // Real scans now include full summary with byType, slaStatus, etc.
   const extendedSummary = isDemoMode ? demoExtendedScanResult.summary : (summary as any);
+
+  // Calculate adjusted exposure score based on fixed remediation groups
+  // Risk reduction is stored as a percentage (0-100), so we convert to score reduction on 0-10 scale
+  const originalExposureScore = extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0;
+  const scoreReduction = (totalRiskReduction / 100) * 10;
+  const adjustedExposureScore = Math.max(0, Math.round((originalExposureScore - scoreReduction) * 10) / 10);
+  const hasFixedGroups = fixedGroupIds.size > 0;
 
   // Calculate risk distribution based on CONTEXTUALIZED risk scores
   const riskCounts = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -248,7 +255,7 @@ function Dashboard() {
         <Tile style={{
           padding: '2rem',
           backgroundColor: '#161616',
-          border: '1px solid #393939',
+          border: hasFixedGroups ? '1px solid #42BE65' : '1px solid #393939',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -285,9 +292,9 @@ function Dashboard() {
                 cy="90"
                 r="75"
                 fill="none"
-                stroke={getRiskColor(extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0)}
+                stroke={getRiskColor(adjustedExposureScore)}
                 strokeWidth="16"
-                strokeDasharray={`${((extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0) / 10) * 471} 471`}
+                strokeDasharray={`${(adjustedExposureScore / 10) * 471} 471`}
                 strokeLinecap="round"
               />
             </svg>
@@ -302,9 +309,9 @@ function Dashboard() {
               <div style={{
                 fontSize: '3rem',
                 fontWeight: 600,
-                color: getRiskColor(extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0)
+                color: getRiskColor(adjustedExposureScore)
               }}>
-                {(extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0).toFixed(1)}
+                {adjustedExposureScore.toFixed(1)}
               </div>
               <div style={{ fontSize: '0.875rem', color: 'var(--cve-text-secondary)' }}>
                 / 10
@@ -315,14 +322,31 @@ function Dashboard() {
             marginTop: '1rem',
             fontSize: '1rem',
             fontWeight: 500,
-            color: getRiskColor(extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0)
+            color: getRiskColor(adjustedExposureScore)
           }}>
-            {(extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0) >= 7.0 ? 'High Exposure' :
-             (extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0) >= 4.0 ? 'Medium Exposure' : 'Low Exposure'}
+            {adjustedExposureScore >= 7.0 ? 'High Exposure' :
+             adjustedExposureScore >= 4.0 ? 'Medium Exposure' : 'Low Exposure'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)', marginTop: '0.25rem' }}>
             {metadata?.context?.appName || 'Application'} Security Posture
           </div>
+          {/* Show improvement indicator when groups are fixed */}
+          {hasFixedGroups && (
+            <div style={{
+              marginTop: '0.75rem',
+              padding: '0.5rem 0.75rem',
+              backgroundColor: 'rgba(66, 190, 101, 0.1)',
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}>
+              <Checkmark size={16} style={{ color: '#42BE65' }} />
+              <span style={{ fontSize: '0.75rem', color: '#42BE65' }}>
+                -{scoreReduction.toFixed(1)} from fixes ({fixedGroupIds.size} groups)
+              </span>
+            </div>
+          )}
         </Tile>
 
         {/* Quick Stats */}
@@ -399,19 +423,36 @@ function Dashboard() {
                 <Information size={14} style={{ color: 'var(--cve-text-secondary)' }} />
               </button>
             </div>
-            <div style={{
-              fontSize: '2.5rem',
-              fontWeight: 600,
-              color: (extendedSummary?.slaStatus?.complianceRate || 0) >= 80 ? '#42BE65' : '#FA4D56'
-            }}>
-              {extendedSummary?.slaStatus?.complianceRate || 0}%
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>
-              {extendedSummary?.slaStatus?.overdue || 0} overdue
-            </div>
+            {totalExposures > 0 ? (
+              <>
+                <div style={{
+                  fontSize: '2.5rem',
+                  fontWeight: 600,
+                  color: (extendedSummary?.slaStatus?.complianceRate || 0) >= 80 ? '#42BE65' : '#FA4D56'
+                }}>
+                  {extendedSummary?.slaStatus?.complianceRate || 0}%
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>
+                  {extendedSummary?.slaStatus?.overdue || 0} overdue
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{
+                  fontSize: '2.5rem',
+                  fontWeight: 600,
+                  color: 'var(--cve-text-secondary)'
+                }}>
+                  N/A
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>
+                  no exposures detected
+                </div>
+              </>
+            )}
           </Tile>
 
-          <Tile style={{ padding: '1.25rem', backgroundColor: '#161616', border: '1px solid #393939', position: 'relative' }}>
+          <Tile style={{ padding: '1.25rem', backgroundColor: '#161616', border: hasFixedGroups ? '1px solid #42BE65' : '1px solid #393939', position: 'relative' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
               <span style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>Concert Score</span>
               <button
@@ -425,13 +466,13 @@ function Dashboard() {
             <div style={{
               fontSize: '2.5rem',
               fontWeight: 600,
-              color: (extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0) >= 7 ? '#FA4D56' :
-                     (extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0) >= 4 ? '#F1C21B' : '#42BE65'
+              color: adjustedExposureScore >= 7 ? '#FA4D56' :
+                     adjustedExposureScore >= 4 ? '#F1C21B' : '#42BE65'
             }}>
-              {(extendedSummary?.riskScore?.concert || summary?.riskScore?.concert || 0).toFixed(1)}<span style={{ fontSize: '1rem', color: 'var(--cve-text-secondary)' }}>/10</span>
+              {adjustedExposureScore.toFixed(1)}<span style={{ fontSize: '1rem', color: 'var(--cve-text-secondary)' }}>/10</span>
             </div>
             <div style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>
-              executive summary
+              {hasFixedGroups ? `was ${originalExposureScore.toFixed(1)}` : 'executive summary'}
             </div>
           </Tile>
 

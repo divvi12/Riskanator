@@ -224,7 +224,7 @@ function StatCard({
 function ExposuresList() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { currentScan, isDemoMode } = useAppContext();
+  const { currentScan, isDemoMode, fixedExposureIds } = useAppContext();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedType, setSelectedType] = useState<ExposureType | 'all'>(
@@ -235,10 +235,15 @@ function ExposuresList() {
   );
   const [selectedExposure, setSelectedExposure] = useState<Exposure | null>(null);
 
-  // Get exposures from demo or scan
-  const exposures: Exposure[] = isDemoMode
+  // Get exposures from demo or scan, filtering out fixed ones
+  const allExposures: Exposure[] = isDemoMode
     ? demoExposures
     : (currentScan?.exposures as Exposure[] || []);
+
+  // Filter out exposures that have been marked as fixed
+  const exposures = useMemo(() => {
+    return allExposures.filter(e => !fixedExposureIds.has(e.id));
+  }, [allExposures, fixedExposureIds]);
 
   // Count by type
   const countByType = useMemo(() => {

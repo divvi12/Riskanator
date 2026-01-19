@@ -40,7 +40,7 @@ const STEPS = [
 
 function ScanSetup() {
   const navigate = useNavigate();
-  const { setCurrentScan, setApplicationContext } = useAppContext();
+  const { setCurrentScan, setApplicationContext, unfixExposuresFoundInScan } = useAppContext();
 
   const [currentStep, setCurrentStep] = useState(0);
   const [isScanning, setIsScanning] = useState(false);
@@ -205,6 +205,14 @@ function ScanSetup() {
       );
 
       addLogEntry('Scan completed successfully!', 'success');
+
+      // Resurface any previously-fixed exposures that appear in this scan
+      // This ensures exposures aren't hidden if they weren't actually fixed
+      if (result.exposures && result.exposures.length > 0) {
+        const foundExposureIds = result.exposures.map((e: any) => e.id);
+        unfixExposuresFoundInScan(foundExposureIds);
+      }
+
       setCurrentScan(result);
       setApplicationContext(context);
       saveToHistory(result);

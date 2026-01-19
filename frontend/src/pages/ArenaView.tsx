@@ -69,8 +69,8 @@ function calculateNodePositions(nodes: TopologyNode[]): Map<string, { x: number;
     'database': 3,     // Data Layer
     'cache': 3,        // Data Layer
     'queue': 3,        // Data Layer
+    'storage': 3,      // Data Layer (S3, blob storage, etc.)
     'external': 4,     // External
-    'storage': 5,      // Infrastructure
     'container': 5     // Infrastructure
   };
 

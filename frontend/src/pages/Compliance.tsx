@@ -269,14 +269,19 @@ function Compliance() {
 
         <Tile style={{
           padding: '1.25rem',
-          backgroundColor: totalNonCompliant === 0 ? 'rgba(66, 190, 101, 0.1)' : 'rgba(250, 77, 86, 0.1)',
-          border: `1px solid ${totalNonCompliant === 0 ? '#42BE65' : '#FA4D56'}`
+          backgroundColor: exposures.length === 0 ? '#161616' : (totalNonCompliant === 0 ? 'rgba(66, 190, 101, 0.1)' : 'rgba(250, 77, 86, 0.1)'),
+          border: `1px solid ${exposures.length === 0 ? '#525252' : (totalNonCompliant === 0 ? '#42BE65' : '#FA4D56')}`
         }}>
-          <div style={{ fontSize: '0.75rem', color: totalNonCompliant === 0 ? '#42BE65' : '#FA4D56', marginBottom: '0.5rem' }}>
+          <div style={{ fontSize: '0.75rem', color: exposures.length === 0 ? 'var(--cve-text-secondary)' : (totalNonCompliant === 0 ? '#42BE65' : '#FA4D56'), marginBottom: '0.5rem' }}>
             Compliance Status
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            {totalNonCompliant === 0 ? (
+            {exposures.length === 0 ? (
+              <>
+                <WarningAlt size={24} style={{ color: '#F1C21B' }} />
+                <span style={{ fontSize: '1.25rem', fontWeight: 600, color: '#F1C21B' }}>No Data</span>
+              </>
+            ) : totalNonCompliant === 0 ? (
               <>
                 <CheckmarkFilled size={24} style={{ color: '#42BE65' }} />
                 <span style={{ fontSize: '1.25rem', fontWeight: 600, color: '#42BE65' }}>Compliant</span>

@@ -116,6 +116,12 @@ interface AppContextType {
   setCurrentScan: (scan: ScanResult | null) => void;
   applicationContext: ApplicationContext | null;
   setApplicationContext: (context: ApplicationContext | null) => void;
+  // Fixed remediation groups tracking
+  fixedGroupIds: Set<string>;
+  fixedExposureIds: Set<string>;
+  markGroupFixed: (groupId: string, riskReduction: number, exposureIds: string[]) => void;
+  unfixExposuresFoundInScan: (foundExposureIds: string[]) => void;
+  totalRiskReduction: number;
   // Gamification
   userProgress: UserProgress;
   challenges: Challenge[];
@@ -136,6 +142,12 @@ export const AppContext = createContext<AppContextType>({
   setCurrentScan: () => {},
   applicationContext: null,
   setApplicationContext: () => {},
+  // Fixed remediation groups defaults
+  fixedGroupIds: new Set(),
+  fixedExposureIds: new Set(),
+  markGroupFixed: () => {},
+  unfixExposuresFoundInScan: () => {},
+  totalRiskReduction: 0,
   // Gamification defaults
   userProgress: getDefaultProgress(),
   challenges: [],
@@ -155,6 +167,87 @@ function App() {
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [currentScan, setCurrentScan] = useState<ScanResult | null>(null);
   const [applicationContext, setApplicationContext] = useState<ApplicationContext | null>(null);
+
+  // Fixed remediation groups state - persisted to localStorage
+  const [fixedGroupIds, setFixedGroupIds] = useState<Set<string>>(() => {
+    const saved = localStorage.getItem('riskanator_fixed_groups');
+    if (saved) {
+      try {
+        return new Set(JSON.parse(saved));
+      } catch {
+        return new Set();
+      }
+    }
+    return new Set();
+  });
+
+  // Fixed exposure IDs - persisted to localStorage
+  const [fixedExposureIds, setFixedExposureIds] = useState<Set<string>>(() => {
+    const saved = localStorage.getItem('riskanator_fixed_exposures');
+    if (saved) {
+      try {
+        return new Set(JSON.parse(saved));
+      } catch {
+        return new Set();
+      }
+    }
+    return new Set();
+  });
+
+  const [totalRiskReduction, setTotalRiskReduction] = useState<number>(() => {
+    const saved = localStorage.getItem('riskanator_risk_reduction');
+    if (saved) {
+      try {
+        return parseFloat(saved) || 0;
+      } catch {
+        return 0;
+      }
+    }
+    return 0;
+  });
+
+  // Save fixed groups to localStorage
+  useEffect(() => {
+    localStorage.setItem('riskanator_fixed_groups', JSON.stringify([...fixedGroupIds]));
+  }, [fixedGroupIds]);
+
+  useEffect(() => {
+    localStorage.setItem('riskanator_fixed_exposures', JSON.stringify([...fixedExposureIds]));
+  }, [fixedExposureIds]);
+
+  useEffect(() => {
+    localStorage.setItem('riskanator_risk_reduction', totalRiskReduction.toString());
+  }, [totalRiskReduction]);
+
+  // Mark a remediation group as fixed (also tracks exposure IDs)
+  const markGroupFixed = useCallback((groupId: string, riskReduction: number, exposureIds: string[]) => {
+    if (fixedGroupIds.has(groupId)) return;
+
+    setFixedGroupIds(prev => new Set([...prev, groupId]));
+    setFixedExposureIds(prev => new Set([...prev, ...exposureIds]));
+    setTotalRiskReduction(prev => prev + riskReduction);
+  }, [fixedGroupIds]);
+
+  // Resurface exposures that appear in a new scan (unfix them)
+  const unfixExposuresFoundInScan = useCallback((foundExposureIds: string[]) => {
+    const foundSet = new Set(foundExposureIds);
+    const resurfacedIds = [...fixedExposureIds].filter(id => foundSet.has(id));
+
+    if (resurfacedIds.length > 0) {
+      // Remove resurfaced exposures from fixed set
+      setFixedExposureIds(prev => {
+        const newSet = new Set(prev);
+        resurfacedIds.forEach(id => newSet.delete(id));
+        return newSet;
+      });
+
+      // Reset fixed groups that contained resurfaced exposures
+      // For simplicity, we'll clear all groups and let user re-mark them
+      // A more complex solution would track which exposures belong to which groups
+      setFixedGroupIds(new Set());
+      setTotalRiskReduction(0);
+    }
+  }, [fixedExposureIds]);
 
   // Gamification state
   const [userProgress, setUserProgress] = useState<UserProgress>(() => {
@@ -408,6 +501,12 @@ function App() {
         setCurrentScan,
         applicationContext,
         setApplicationContext,
+        // Fixed remediation groups
+        fixedGroupIds,
+        fixedExposureIds,
+        markGroupFixed,
+        unfixExposuresFoundInScan,
+        totalRiskReduction,
         // Gamification
         userProgress,
         challenges,
