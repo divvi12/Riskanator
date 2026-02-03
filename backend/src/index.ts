@@ -1,8 +1,12 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import scanRoutes from './routes/scanRoutes';
 import aiRoutes from './routes/aiRoutes';
+
+const execAsync = promisify(exec);
 
 // Load environment variables
 dotenv.config();
@@ -16,7 +20,9 @@ app.use(cors({
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'https://concert-tem-frontend.25bete04mfc7.eu-gb.codeengine.appdomain.cloud',
-    /\.codeengine\.appdomain\.cloud$/  // Allow all Code Engine subdomains
+    /\.codeengine\.appdomain\.cloud$/,  // Allow all Code Engine subdomains
+    /\.web\.app$/,                       // Allow Firebase Hosting domains
+    /\.firebaseapp\.com$/                // Allow Firebase legacy domains
   ],
   credentials: true
 }));
@@ -29,6 +35,33 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     version: '1.0.0'
   });
+});
+
+// Debug endpoint to check tool availability
+app.get('/debug/tools', async (req, res) => {
+  const results: Record<string, any> = {
+    path: process.env.PATH,
+    tools: {}
+  };
+
+  const commands = [
+    { name: 'trivy', cmd: 'which trivy && trivy --version' },
+    { name: 'pip-audit', cmd: 'which pip-audit && pip-audit --version' },
+    { name: 'git', cmd: 'which git && git --version' },
+    { name: 'ls-usr-local-bin', cmd: 'ls -la /usr/local/bin/' },
+    { name: 'ls-usr-bin', cmd: 'ls -la /usr/bin/ | grep -E "trivy|pip"' }
+  ];
+
+  for (const { name, cmd } of commands) {
+    try {
+      const { stdout, stderr } = await execAsync(cmd, { timeout: 10000 });
+      results.tools[name] = { success: true, stdout: stdout.trim(), stderr: stderr.trim() };
+    } catch (e: any) {
+      results.tools[name] = { success: false, error: e.message, stderr: e.stderr?.toString() };
+    }
+  }
+
+  res.json(results);
 });
 
 // API Routes

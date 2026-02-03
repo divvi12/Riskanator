@@ -22,6 +22,7 @@ import {
   calculateOverallDetailedScore,
   calculateOverallApplicationRisk
 } from './exposureRiskService';
+import { applyComplianceToExposures } from './complianceService';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface ExposureScannerResult {
@@ -458,9 +459,13 @@ export async function runExposureScanning(
   onProgress?.('Calculating risk scores...');
   const scoredExposures = processExposures(allExposures, context);
 
+  // 6.5. Apply compliance mapping based on context
+  onProgress?.('Mapping compliance requirements...');
+  const exposuresWithCompliance = applyComplianceToExposures(scoredExposures, context);
+
   // 7. Apply SLA deadlines
   onProgress?.('Applying SLA deadlines...');
-  const exposuresWithSLA = applySLAToExposures(scoredExposures, context);
+  const exposuresWithSLA = applySLAToExposures(exposuresWithCompliance, context);
 
   // 8. Generate summary
   const summary = generateSummary(exposuresWithSLA);

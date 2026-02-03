@@ -88,12 +88,9 @@ export async function scanWithCheckov(repoPath: string): Promise<MisconfigScanRe
   const exposures: MisconfigurationExposure[] = [];
 
   try {
-    // Check if Checkov is installed (add Python user bin to PATH)
-    const pythonBin = `${process.env.HOME}/Library/Python/3.9/bin`;
-    const envPath = `${pythonBin}:${process.env.PATH}`;
-
+    // Check if Checkov is installed
     try {
-      await execAsync('checkov --version', { timeout: 10000, env: { ...process.env, PATH: envPath } });
+      await execAsync('checkov --version', { timeout: 10000 });
     } catch {
       return {
         exposures: [],
@@ -102,14 +99,15 @@ export async function scanWithCheckov(repoPath: string): Promise<MisconfigScanRe
       };
     }
 
+    console.log('Running Checkov scan...');
+
     // Run Checkov with JSON output
     const { stdout, stderr } = await execAsync(
       `checkov -d "${repoPath}" --output json --quiet 2>/dev/null || true`,
       {
         cwd: repoPath,
         timeout: 600000, // 10 minutes
-        maxBuffer: 100 * 1024 * 1024,
-        env: { ...process.env, PATH: envPath }
+        maxBuffer: 100 * 1024 * 1024
       }
     );
 
@@ -393,24 +391,184 @@ export async function scanKubernetes(repoPath: string): Promise<MisconfigScanRes
   }
 }
 
+// Run Trivy for IaC misconfiguration scanning (uses installed Trivy binary)
+export async function scanWithTrivy(repoPath: string): Promise<MisconfigScanResult> {
+  const exposures: MisconfigurationExposure[] = [];
+  const trivy = '/usr/local/bin/trivy';
+
+  try {
+    // Check if Trivy is available
+    try {
+      await execAsync(`${trivy} --version`, { timeout: 10000 });
+    } catch {
+      return {
+        exposures: [],
+        success: false,
+        error: 'Trivy not installed'
+      };
+    }
+
+    console.log('Running Trivy misconfig scan...');
+
+    // Run Trivy with misconfig scanner
+    const { stdout, stderr } = await execAsync(
+      `${trivy} fs --scanners misconfig --format json --quiet "${repoPath}"`,
+      {
+        cwd: repoPath,
+        timeout: 300000, // 5 minutes
+        maxBuffer: 50 * 1024 * 1024
+      }
+    );
+
+    if (!stdout || stdout.trim() === '') {
+      return { exposures: [], success: true };
+    }
+
+    try {
+      const results = JSON.parse(stdout);
+
+      for (const result of results.Results || []) {
+        for (const misconfig of result.Misconfigurations || []) {
+          const severity = mapSeverity(misconfig.Severity);
+          const filePath = result.Target || 'unknown';
+          const relativePath = filePath.replace(repoPath + '/', '').replace(repoPath, '').replace(/^\//, '');
+          const framework = determineFramework(filePath);
+          const isPublic = isPubliclyAccessible(misconfig.ID || '', misconfig.Title || '', misconfig.Description || '');
+
+          const exposure: MisconfigurationExposure = {
+            id: uuidv4(),
+            type: 'misconfiguration',
+            title: generateTitle(misconfig.Title || 'IaC Misconfiguration', misconfig.Type || 'unknown'),
+            description: misconfig.Description || misconfig.Message || 'Infrastructure misconfiguration detected',
+            severity,
+            riskScore: { concert: 0, comprehensive: 0 },
+            location: misconfig.CauseMetadata?.StartLine
+              ? `${relativePath}:${misconfig.CauseMetadata.StartLine}`
+              : relativePath,
+            detectedAt: new Date().toISOString(),
+            source: 'trivy',
+            resourceType: misconfig.Type || 'iac_resource',
+            checkId: misconfig.ID || 'TRIVY',
+            checkName: misconfig.Title,
+            guideline: misconfig.Resolution || misconfig.References?.join(', '),
+            isPubliclyAccessible: isPublic,
+            framework,
+            resourceName: misconfig.CauseMetadata?.Resource,
+            codeSnippet: misconfig.CauseMetadata?.Code?.Lines?.map((l: any) => l.Content).join('\n')
+          };
+
+          exposures.push(exposure);
+        }
+      }
+
+      console.log(`Trivy misconfig scan found ${exposures.length} issues`);
+    } catch (parseError) {
+      console.error('Error parsing Trivy misconfig output:', parseError);
+    }
+
+    return { exposures, success: true };
+  } catch (error: any) {
+    // Trivy may exit non-zero but still produce valid output
+    const output = error.stdout?.toString() || '';
+    if (output && output.trim().startsWith('{')) {
+      try {
+        const results = JSON.parse(output);
+        // Process results same as above
+        for (const result of results.Results || []) {
+          for (const misconfig of result.Misconfigurations || []) {
+            const severity = mapSeverity(misconfig.Severity);
+            const filePath = result.Target || 'unknown';
+            const relativePath = filePath.replace(repoPath + '/', '');
+            const framework = determineFramework(filePath);
+
+            const exposure: MisconfigurationExposure = {
+              id: uuidv4(),
+              type: 'misconfiguration',
+              title: generateTitle(misconfig.Title || 'IaC Misconfiguration', misconfig.Type || 'unknown'),
+              description: misconfig.Description || 'Infrastructure misconfiguration detected',
+              severity,
+              riskScore: { concert: 0, comprehensive: 0 },
+              location: misconfig.CauseMetadata?.StartLine
+                ? `${relativePath}:${misconfig.CauseMetadata.StartLine}`
+                : relativePath,
+              detectedAt: new Date().toISOString(),
+              source: 'trivy',
+              resourceType: misconfig.Type || 'iac_resource',
+              checkId: misconfig.ID || 'TRIVY',
+              checkName: misconfig.Title,
+              isPubliclyAccessible: false,
+              framework
+            };
+
+            exposures.push(exposure);
+          }
+        }
+        return { exposures, success: true };
+      } catch {
+        // Fall through to error
+      }
+    }
+
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error running Trivy misconfig scan';
+    return { exposures: [], success: false, error: errorMessage };
+  }
+}
+
 // Main misconfiguration scanning function
 export async function runMisconfigScanning(repoPath: string): Promise<MisconfigScanResult> {
   const allExposures: MisconfigurationExposure[] = [];
   const errors: string[] = [];
 
-  // Run Checkov (covers most IaC frameworks)
+  console.log('=== MISCONFIG SCANNER TOOLS ===');
+  console.log('Available misconfiguration scanning tools:');
+  console.log('  - Trivy (IaC scanner) - Primary');
+  console.log('  - Checkov (IaC scanner) - Fallback');
+  console.log('  - tfsec (Terraform) - Additional');
+  console.log('  - kubesec (Kubernetes) - Additional');
+  console.log('===============================');
+
+  // Try Trivy first (already installed in container)
+  console.log('[TOOL] Using Trivy for misconfiguration scanning...');
+  const trivyResult = await scanWithTrivy(repoPath);
+  if (trivyResult.success) {
+    console.log(`[TOOL] Trivy complete: ${trivyResult.exposures.length} misconfigurations found`);
+    allExposures.push(...trivyResult.exposures);
+  } else {
+    console.log(`[TOOL] Trivy failed: ${trivyResult.error}`);
+  }
+  if (trivyResult.error && !trivyResult.error.includes('not installed')) {
+    errors.push(trivyResult.error);
+  }
+
+  // If Trivy found issues or succeeded, we're done
+  if (trivyResult.success && trivyResult.exposures.length >= 0) {
+    console.log(`[TOOL] Misconfiguration scan complete using Trivy. Total findings: ${allExposures.length}`);
+    return {
+      exposures: allExposures,
+      success: true,
+      error: errors.length > 0 ? errors.join('; ') : undefined
+    };
+  }
+
+  // Fallback: Run Checkov if available (covers most IaC frameworks)
+  console.log('[TOOL] Trivy unavailable, using Checkov as fallback...');
   const checkovResult = await scanWithCheckov(repoPath);
   if (checkovResult.success) {
+    console.log(`[TOOL] Checkov complete: ${checkovResult.exposures.length} misconfigurations found`);
     allExposures.push(...checkovResult.exposures);
+  } else {
+    console.log(`[TOOL] Checkov failed: ${checkovResult.error}`);
   }
-  if (checkovResult.error) {
+  if (checkovResult.error && !checkovResult.error.includes('not installed')) {
     errors.push(checkovResult.error);
   }
 
   // Run tfsec for additional Terraform coverage
+  console.log('[TOOL] Running tfsec for additional Terraform coverage...');
   const tfsecResult = await scanWithTfsec(repoPath);
   if (tfsecResult.success) {
-    // Deduplicate with Checkov results by checkId + location
+    console.log(`[TOOL] tfsec complete: ${tfsecResult.exposures.length} issues found`);
+    // Deduplicate with existing results by checkId + location
     const existingKeys = new Set(allExposures.map(e => `${e.checkId}-${e.location}`));
     for (const exposure of tfsecResult.exposures) {
       const key = `${exposure.checkId}-${exposure.location}`;
@@ -418,14 +576,18 @@ export async function runMisconfigScanning(repoPath: string): Promise<MisconfigS
         allExposures.push(exposure);
       }
     }
+  } else if (tfsecResult.error) {
+    console.log(`[TOOL] tfsec not available: ${tfsecResult.error}`);
   }
-  if (tfsecResult.error) {
+  if (tfsecResult.error && !tfsecResult.error.includes('not installed')) {
     errors.push(tfsecResult.error);
   }
 
   // Run kubesec for Kubernetes
+  console.log('[TOOL] Running kubesec for Kubernetes scanning...');
   const kubesecResult = await scanKubernetes(repoPath);
   if (kubesecResult.success) {
+    console.log(`[TOOL] kubesec complete: ${kubesecResult.exposures.length} issues found`);
     const existingKeys = new Set(allExposures.map(e => `${e.checkId}-${e.location}`));
     for (const exposure of kubesecResult.exposures) {
       const key = `${exposure.checkId}-${exposure.location}`;
@@ -433,11 +595,14 @@ export async function runMisconfigScanning(repoPath: string): Promise<MisconfigS
         allExposures.push(exposure);
       }
     }
+  } else if (kubesecResult.error) {
+    console.log(`[TOOL] kubesec not available: ${kubesecResult.error}`);
   }
-  if (kubesecResult.error) {
+  if (kubesecResult.error && !kubesecResult.error.includes('not installed')) {
     errors.push(kubesecResult.error);
   }
 
+  console.log(`[TOOL] Misconfiguration scan complete. Total findings: ${allExposures.length}`);
   return {
     exposures: allExposures,
     success: true,

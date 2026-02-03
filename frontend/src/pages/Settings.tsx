@@ -21,7 +21,7 @@ import { Save, CheckmarkFilled, WarningAlt, Bot, Connect, Settings as SettingsIc
 import { useNotifications } from '../components/NotificationProvider';
 import { SettingsFormSkeleton } from '../components/SkeletonLoaders';
 import { useAppContext } from '../App';
-import { recalculateScores } from '../services/api';
+import { recalculateScores, initializeGemini, validateGeminiApiKey } from '../services/api';
 
 interface ApplicationContextSettings {
   criticality: number;
@@ -76,7 +76,7 @@ function Settings() {
   const [geminiConfig, setGeminiConfig] = useState<GeminiSettings>({
     apiKey: '',
     enabled: false,
-    model: 'gemini-1.5-pro',
+    model: 'gemini-2.5-flash',
     autoExplain: true
   });
 
@@ -95,7 +95,14 @@ function Settings() {
       if (savedSettings) {
         const parsed = JSON.parse(savedSettings);
         if (parsed.serviceNowConfig) setServiceNowConfig(parsed.serviceNowConfig);
-        if (parsed.geminiConfig) setGeminiConfig(parsed.geminiConfig);
+        if (parsed.geminiConfig) {
+          // Fix old/invalid model names
+          const validModels = ['gemini-2.5-flash', 'gemini-2.5-pro'];
+          if (!validModels.includes(parsed.geminiConfig.model)) {
+            parsed.geminiConfig.model = 'gemini-2.5-flash';
+          }
+          setGeminiConfig(parsed.geminiConfig);
+        }
         if (parsed.riskFormula) setRiskFormula(parsed.riskFormula);
         if (parsed.appContext) setAppContext(parsed.appContext);
       }
@@ -123,16 +130,28 @@ function Settings() {
 
   const handleTestGemini = async () => {
     setGeminiStatus('testing');
-    // Simulate connection test
-    setTimeout(() => {
-      if (geminiConfig.apiKey && geminiConfig.apiKey.length > 10) {
+
+    if (!geminiConfig.apiKey || geminiConfig.apiKey.length < 10) {
+      setGeminiStatus('error');
+      showError('Invalid API key', 'Please enter a valid API key');
+      return;
+    }
+
+    try {
+      // Validate the API key by making a real test call to Gemini
+      const result = await validateGeminiApiKey(geminiConfig.apiKey);
+      if (result.success) {
         setGeminiStatus('success');
         showSuccess('API key valid', 'Gemini AI is ready to use');
       } else {
         setGeminiStatus('error');
-        showError('Invalid API key', 'Please check your API key and try again');
+        showError('Invalid API key', result.error || result.message || 'Please check your API key and try again');
       }
-    }, 1500);
+    } catch (error: any) {
+      setGeminiStatus('error');
+      const message = error?.response?.data?.message || error?.response?.data?.error || 'Could not validate API key';
+      showError('Validation failed', message);
+    }
   };
 
   const handleSave = async () => {
@@ -146,6 +165,16 @@ function Settings() {
         appContext
       }));
       setSaved(true);
+
+      // Initialize Gemini backend if API key is configured
+      if (geminiConfig.enabled && geminiConfig.apiKey && geminiConfig.apiKey.length > 10) {
+        try {
+          await initializeGemini(geminiConfig.apiKey);
+        } catch (error) {
+          console.error('Failed to initialize Gemini:', error);
+          // Don't block save, just log the error
+        }
+      }
 
       // Auto-recalculate if there's scan data (for Application Context tab)
       if (activeTab === 0 && currentScan?.exposures && currentScan.exposures.length > 0) {
@@ -601,7 +630,7 @@ function Settings() {
                     <span style={{ fontSize: '0.75rem', fontWeight: 400, letterSpacing: '0.32px', color: 'var(--cve-text-primary)' }}>Model</span>
                     <Tooltip
                       align="right"
-                      label="Pro models provide higher quality responses but are slower. Flash models are faster and cheaper but may be less detailed. Pro 1.5 is recommended for security analysis accuracy."
+                      label="Pro models provide higher quality responses but are slower. Flash models are faster and cheaper. Gemini 2.5 Flash is recommended for best balance of speed and quality."
                     >
                       <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                         <Information size={14} style={{ color: 'var(--cve-text-secondary)' }} />
@@ -615,9 +644,8 @@ function Settings() {
                     onChange={(e) => updateGeminiConfig('model', e.target.value)}
                     disabled={!geminiConfig.enabled}
                   >
-                    <SelectItem value="gemini-1.5-pro" text="Gemini 1.5 Pro (Recommended)" />
-                    <SelectItem value="gemini-1.5-flash" text="Gemini 1.5 Flash (Faster)" />
-                    <SelectItem value="gemini-pro" text="Gemini Pro (Legacy)" />
+                    <SelectItem value="gemini-2.5-flash" text="Gemini 2.5 Flash (Recommended)" />
+                    <SelectItem value="gemini-2.5-pro" text="Gemini 2.5 Pro" />
                   </Select>
                 </div>
 

@@ -3,26 +3,39 @@ import {
   initializeGemini,
   isGeminiInitialized,
   generateExposureExplanation,
-  generateExecutiveSummary
+  generateExecutiveSummary,
+  validateGeminiApiKey
 } from '../services/geminiService';
 import { Exposure, ApplicationContext } from '../types';
 
 const router = Router();
 
-// Initialize Gemini with API key
+// Initialize Gemini with API key (quick initialization without validation)
 router.post('/ai/initialize', async (req: Request, res: Response) => {
-  const { apiKey } = req.body;
+  const { apiKey, validate } = req.body;
 
   if (!apiKey) {
-    return res.status(400).json({ error: 'API key is required' });
+    return res.status(400).json({ success: false, error: 'API key is required' });
   }
 
+  // If validate flag is set, actually test the API key with a real call
+  if (validate) {
+    const result = await validateGeminiApiKey(apiKey);
+    if (result.valid) {
+      res.json({ success: true, message: 'Gemini API key validated and initialized successfully' });
+    } else {
+      res.status(400).json({ success: false, error: 'Invalid API key', message: result.error });
+    }
+    return;
+  }
+
+  // Quick initialization without validation
   const success = initializeGemini(apiKey);
 
   if (success) {
     res.json({ success: true, message: 'Gemini AI initialized successfully' });
   } else {
-    res.status(500).json({ error: 'Failed to initialize Gemini AI' });
+    res.status(500).json({ success: false, error: 'Failed to initialize Gemini AI' });
   }
 });
 

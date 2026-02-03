@@ -4,7 +4,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CVE } from '../types';
 
-const execAsync = promisify(exec);
+const execPromise = promisify(exec);
+
+// Simple exec wrapper with proper string conversion
+const execAsync = async (command: string, options?: any): Promise<{ stdout: string; stderr: string }> => {
+  const result = await execPromise(command, options);
+  return {
+    stdout: result.stdout?.toString() || '',
+    stderr: result.stderr?.toString() || ''
+  };
+};
 
 export interface ScanResult {
   cves: CVE[];
@@ -16,34 +25,102 @@ export interface ScanResult {
 // NPM Audit Scanner
 export async function runNpmAudit(repoPath: string): Promise<ScanResult> {
   const packageJsonPath = path.join(repoPath, 'package.json');
+  const packageLockPath = path.join(repoPath, 'package-lock.json');
+  const shrinkwrapPath = path.join(repoPath, 'npm-shrinkwrap.json');
+
+  console.log('=== NPM AUDIT DIAGNOSTICS ===');
+  console.log('repoPath:', repoPath);
+  console.log('package.json exists:', fs.existsSync(packageJsonPath));
+  console.log('package-lock.json exists:', fs.existsSync(packageLockPath));
 
   if (!fs.existsSync(packageJsonPath)) {
+    console.log('No package.json found, skipping npm audit');
+    console.log('=== NPM AUDIT DIAGNOSTICS END ===');
     return { cves: [], scanType: 'npm', success: true };
   }
 
   try {
-    // First install dependencies (with package-lock generation)
-    try {
-      await execAsync('npm install --package-lock-only --ignore-scripts', {
-        cwd: repoPath,
-        timeout: 120000
-      });
-    } catch (installError) {
-      // Continue even if install fails, audit might still work
+    // Check if lockfile already exists
+    let hasLockfile = fs.existsSync(packageLockPath) || fs.existsSync(shrinkwrapPath);
+
+    // If no lockfile, try to create one
+    if (!hasLockfile) {
+      console.log('No lockfile found, running npm install --package-lock-only...');
+      try {
+        await execAsync('npm install --package-lock-only --ignore-scripts', {
+          cwd: repoPath,
+          timeout: 180000 // 3 minutes for large repos
+        });
+        console.log('npm install completed');
+        hasLockfile = fs.existsSync(packageLockPath);
+      } catch (installError: any) {
+        console.log('npm install failed:', installError.message?.substring(0, 200));
+      }
+    } else {
+      console.log('Lockfile already exists, skipping npm install');
+    }
+
+    // Check if we have a lockfile now
+    if (!hasLockfile) {
+      console.log('No lockfile available, cannot run npm audit');
+      console.log('=== NPM AUDIT DIAGNOSTICS END ===');
+      return {
+        cves: [],
+        scanType: 'npm',
+        success: false,
+        error: 'npm audit requires a lockfile (package-lock.json) which could not be generated'
+      };
     }
 
     // Run npm audit
-    const { stdout } = await execAsync('npm audit --json 2>/dev/null || true', {
-      cwd: repoPath,
-      timeout: 60000,
-      maxBuffer: 10 * 1024 * 1024
-    });
+    console.log('Running npm audit --json...');
+    try {
+      const { stdout, stderr } = await execAsync('npm audit --json', {
+        cwd: repoPath,
+        timeout: 120000, // 2 minutes
+        maxBuffer: 10 * 1024 * 1024
+      });
 
-    const cves = parseNpmAuditOutput(stdout);
-    return { cves, scanType: 'npm', success: true };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return { cves: [], scanType: 'npm', success: false, error: errorMessage };
+      console.log('npm audit stdout length:', stdout.length);
+      if (stderr) {
+        console.log('npm audit stderr:', stderr.substring(0, 500));
+      }
+      console.log('=== NPM AUDIT DIAGNOSTICS END ===');
+
+      const cves = parseNpmAuditOutput(stdout);
+      return { cves, scanType: 'npm', success: true };
+    } catch (auditError: any) {
+      // npm audit exits with non-zero when vulnerabilities are found
+      const output = auditError.stdout?.toString() || '';
+      const stderr = auditError.stderr?.toString() || '';
+
+      console.log('npm audit exited non-zero (normal when vulns found)');
+      console.log('npm audit stdout length:', output.length);
+      console.log('npm audit stderr preview:', stderr.substring(0, 500));
+      console.log('=== NPM AUDIT DIAGNOSTICS END ===');
+
+      // If we got JSON output, try to parse it
+      if (output && output.trim().startsWith('{')) {
+        const cves = parseNpmAuditOutput(output);
+        return { cves, scanType: 'npm', success: true };
+      }
+
+      // Check if it's ENOLOCK error
+      if (stderr.includes('ENOLOCK')) {
+        return {
+          cves: [],
+          scanType: 'npm',
+          success: false,
+          error: 'npm audit requires a lockfile which could not be generated'
+        };
+      }
+
+      return { cves: [], scanType: 'npm', success: false, error: auditError.message };
+    }
+  } catch (error: any) {
+    console.error('npm audit error:', error.message);
+    console.log('=== NPM AUDIT DIAGNOSTICS END ===');
+    return { cves: [], scanType: 'npm', success: false, error: error.message };
   }
 }
 
@@ -129,36 +206,81 @@ export async function runPipAudit(repoPath: string): Promise<ScanResult> {
   }
 
   try {
-    // Check if pip-audit is installed
+    const pipAudit = '/usr/local/bin/pip-audit';
+
+    // Diagnostic logging
+    console.log('=== PIP-AUDIT DIAGNOSTICS ===');
+    console.log('repoPath:', repoPath);
+
+    // Check binary exists
     try {
-      await execAsync('pip-audit --version', { timeout: 10000 });
-    } catch {
-      return {
-        cves: [],
-        scanType: 'pip',
-        success: false,
-        error: 'pip-audit not installed'
-      };
+      const { stdout: lsOut } = await execAsync(`ls -la ${pipAudit}`, { timeout: 5000 });
+      console.log('ls pip-audit:', lsOut.trim());
+    } catch (e: any) {
+      console.log('ls failed:', e.message);
     }
 
-    let command = 'pip-audit --format json';
+    // Skip version check in production - pip-audit hangs while downloading databases
+    // Instead, just verify the binary exists (we did ls check above)
+    console.log('Skipping pip-audit --version check (causes timeout on first DB download)');
+
+    // Use --progress-spinner off to prevent stdout buffering issues
+    // Use 5 minute timeout since pip-audit needs to:
+    // 1. Download vulnerability database from PyPI
+    // 2. Resolve and check all packages in requirements.txt
+    let command = `${pipAudit} --format json --progress-spinner off`;
     if (fs.existsSync(requirementsPath)) {
       command += ` -r ${requirementsPath}`;
     }
 
-    // Run pip-audit, capturing both stdout and stderr
-    const { stdout } = await execAsync(command + ' 2>/dev/null || echo "[]"', {
-      cwd: repoPath,
-      timeout: 120000,
-      maxBuffer: 10 * 1024 * 1024
-    });
+    console.log('Running pip-audit command:', command);
 
-    const cves = parsePipAuditOutput(stdout);
-    return { cves, scanType: 'pip', success: true };
-  } catch (error) {
-    // pip-audit can fail for various reasons (unpinned deps, network issues)
-    // Treat as success with no CVEs found rather than showing error
-    return { cves: [], scanType: 'pip', success: true };
+    try {
+      const { stdout, stderr } = await execAsync(command + ' 2>&1', {
+        cwd: repoPath,
+        timeout: 300000, // 5 minutes
+        maxBuffer: 10 * 1024 * 1024
+      });
+
+      console.log('pip-audit stdout length:', stdout.length);
+      console.log('=== PIP-AUDIT DIAGNOSTICS END ===');
+
+      const cves = parsePipAuditOutput(stdout);
+      return { cves, scanType: 'pip', success: true };
+    } catch (cmdError: any) {
+      // pip-audit returns non-zero exit code when vulnerabilities are found
+      // Check if we got valid JSON output despite the error
+      const output = cmdError.stdout?.toString() || '';
+      const stderr = cmdError.stderr?.toString() || '';
+
+      console.log('pip-audit command error:', cmdError.message);
+      console.log('pip-audit killed:', cmdError.killed);
+      console.log('pip-audit signal:', cmdError.signal);
+      console.log('pip-audit stdout preview:', output.substring(0, 500));
+      console.log('pip-audit stderr preview:', stderr.substring(0, 500));
+
+      // If we got JSON output, try to parse it (pip-audit exits non-zero when vulns found)
+      if (output && output.trim().startsWith('[')) {
+        console.log('pip-audit has JSON output despite error, parsing...');
+        const cves = parsePipAuditOutput(output);
+        return { cves, scanType: 'pip', success: true };
+      }
+
+      // If timeout, report it clearly
+      if (cmdError.killed || cmdError.signal === 'SIGTERM') {
+        return {
+          cves: [],
+          scanType: 'pip',
+          success: false,
+          error: 'pip-audit timed out (>5 min) - repository may have too many dependencies'
+        };
+      }
+
+      return { cves: [], scanType: 'pip', success: false, error: cmdError.message };
+    }
+  } catch (error: any) {
+    console.error('pip-audit unexpected error:', error.message);
+    return { cves: [], scanType: 'pip', success: false, error: error.message };
   }
 }
 
@@ -279,32 +401,94 @@ export async function runTrivy(repoPath: string): Promise<ScanResult> {
   }
 
   try {
-    // Check if trivy is installed
+    const trivy = '/usr/local/bin/trivy';
+
+    // Diagnostic logging
+    console.log('=== TRIVY DIAGNOSTICS ===');
+    console.log('repoPath:', repoPath);
+    console.log('cwd:', process.cwd());
+    console.log('PATH:', process.env.PATH);
+
+    // Check binary exists
     try {
-      await execAsync('trivy --version', { timeout: 10000 });
-    } catch {
+      const { stdout: lsOut } = await execAsync(`ls -la ${trivy}`, { timeout: 5000 });
+      console.log('ls trivy:', lsOut.trim());
+    } catch (e: any) {
+      console.log('ls failed:', e.message);
+    }
+
+    // Check binary type
+    try {
+      const { stdout: fileOut } = await execAsync(`file ${trivy}`, { timeout: 5000 });
+      console.log('file trivy:', fileOut.trim());
+    } catch (e: any) {
+      console.log('file cmd failed:', e.message);
+    }
+
+    // Try version check with detailed error capture
+    console.log('Testing trivy --version...');
+    try {
+      const { stdout: vOut, stderr: vErr } = await execAsync(`${trivy} --version`, { timeout: 30000 });
+      console.log('trivy version OK:', vOut.trim());
+    } catch (vErr: any) {
+      console.error('trivy --version FAILED');
+      console.error('  message:', vErr.message);
+      console.error('  code:', vErr.code);
+      console.error('  signal:', vErr.signal);
+      console.error('  killed:', vErr.killed);
+      console.error('  stdout:', vErr.stdout?.toString().substring(0, 200));
+      console.error('  stderr:', vErr.stderr?.toString().substring(0, 200));
       return {
         cves: [],
         scanType: 'trivy',
         success: false,
-        error: 'Trivy not installed. See: https://aquasecurity.github.io/trivy/'
+        error: `Trivy version check failed: code=${vErr.code}, signal=${vErr.signal}, msg=${vErr.message}`
       };
     }
 
-    const { stdout } = await execAsync(
-      `trivy fs --format json --scanners vuln ${repoPath} 2>/dev/null || true`,
-      {
-        cwd: repoPath,
-        timeout: 300000,
-        maxBuffer: 20 * 1024 * 1024
-      }
-    );
+    // Run the actual scan - use --quiet to suppress progress output
+    // Do NOT redirect stderr to stdout (2>&1) as it corrupts JSON output
+    console.log('Running trivy fs scan...');
+    try {
+      const { stdout, stderr } = await execAsync(
+        `${trivy} fs --format json --scanners vuln --quiet ${repoPath}`,
+        {
+          cwd: repoPath,
+          timeout: 300000,
+          maxBuffer: 20 * 1024 * 1024
+        }
+      );
 
-    const cves = parseTrivyOutput(stdout);
-    return { cves, scanType: 'trivy', success: true };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return { cves: [], scanType: 'trivy', success: false, error: errorMessage };
+      console.log('trivy scan stdout length:', stdout.length);
+      if (stderr) {
+        console.log('trivy stderr:', stderr.substring(0, 500));
+      }
+      console.log('=== TRIVY DIAGNOSTICS END ===');
+
+      const cves = parseTrivyOutput(stdout);
+      return { cves, scanType: 'trivy', success: true };
+    } catch (trivyError: any) {
+      // Trivy may exit non-zero but still produce valid JSON output
+      const output = trivyError.stdout?.toString() || '';
+      const stderr = trivyError.stderr?.toString() || '';
+
+      console.log('trivy command error:', trivyError.message);
+      console.log('trivy stdout preview:', output.substring(0, 500));
+      console.log('trivy stderr preview:', stderr.substring(0, 500));
+
+      // If we got JSON output, try to parse it
+      if (output && (output.trim().startsWith('{') || output.trim().startsWith('['))) {
+        console.log('trivy has JSON output despite error, parsing...');
+        const cves = parseTrivyOutput(output);
+        return { cves, scanType: 'trivy', success: true };
+      }
+
+      return { cves: [], scanType: 'trivy', success: false, error: trivyError.message };
+    }
+  } catch (error: any) {
+    console.error('Trivy unexpected error:', error.message);
+    console.error('Stack:', error.stack);
+    return { cves: [], scanType: 'trivy', success: false, error: error.message };
   }
 }
 
@@ -387,7 +571,9 @@ export async function scanRepository(
     {
       name: 'pip-audit',
       run: () => runPipAudit(repoPath),
-      condition: languages.includes('python')
+      // TODO: pip-audit disabled - consistently times out (>5min) downloading vuln DB on Cloud Run
+      // Need to either pre-cache the DB in Dockerfile or use a different Python scanner
+      condition: false // languages.includes('python')
     },
     {
       name: 'Trivy',
@@ -397,28 +583,60 @@ export async function scanRepository(
   ];
 
   const activeScanners = scanners.filter(s => s.condition);
+
+  // Log which tools are available and being used
+  console.log('=== CVE SCANNER TOOLS ===');
+  console.log('Tools being used for this scan:');
+  activeScanners.forEach(s => console.log(`  - ${s.name}`));
+  console.log('Tools NOT being used (conditions not met):');
+  scanners.filter(s => !s.condition).forEach(s => console.log(`  - ${s.name}`));
+  console.log('=========================');
+
   onProgress?.(`Running ${activeScanners.length} scanner(s) in parallel: ${activeScanners.map(s => s.name).join(', ')}`);
 
   // Run all scanners in parallel, reporting results as they complete
   const scanPromises = activeScanners.map(async (scanner) => {
+    console.log(`[TOOL] Starting ${scanner.name}...`);
     onProgress?.(`Starting ${scanner.name}...`);
     const startTime = Date.now();
-    const result = await scanner.run();
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    if (result.success) {
-      if (result.cves.length > 0) {
-        const critical = result.cves.filter(c => c.severity === 'critical').length;
-        const high = result.cves.filter(c => c.severity === 'high').length;
-        onProgress?.(`${scanner.name} complete (${elapsed}s): ${result.cves.length} vulnerabilities found (${critical} critical, ${high} high)`);
-      } else {
-        onProgress?.(`${scanner.name} complete (${elapsed}s): No vulnerabilities found`);
+    // Set up periodic progress updates while scanner is running
+    let isRunning = true;
+    const progressInterval = setInterval(() => {
+      if (isRunning) {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        onProgress?.(`Scanning with ${scanner.name}... (${elapsed}s elapsed)`);
       }
-    } else {
-      onProgress?.(`${scanner.name} warning: ${result.error || 'unknown error'}`);
-    }
+    }, 20000); // Update every 20 seconds
 
-    return result;
+    try {
+      const result = await scanner.run();
+      isRunning = false;
+      clearInterval(progressInterval);
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+      if (result.success) {
+        if (result.cves.length > 0) {
+          const critical = result.cves.filter(c => c.severity === 'critical').length;
+          const high = result.cves.filter(c => c.severity === 'high').length;
+          console.log(`[TOOL] ${scanner.name} complete (${elapsed}s): ${result.cves.length} vulnerabilities found`);
+          onProgress?.(`${scanner.name} complete (${elapsed}s): ${result.cves.length} vulnerabilities found (${critical} critical, ${high} high)`);
+        } else {
+          console.log(`[TOOL] ${scanner.name} complete (${elapsed}s): No vulnerabilities found`);
+          onProgress?.(`${scanner.name} complete (${elapsed}s): No vulnerabilities found`);
+        }
+      } else {
+        console.log(`[TOOL] ${scanner.name} warning: ${result.error || 'unknown error'}`);
+        onProgress?.(`${scanner.name} warning: ${result.error || 'unknown error'}`);
+      }
+
+      return result;
+    } catch (error) {
+      isRunning = false;
+      clearInterval(progressInterval);
+      throw error;
+    }
   });
 
   const results = await Promise.all(scanPromises);

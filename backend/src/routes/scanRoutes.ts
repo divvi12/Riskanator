@@ -7,11 +7,13 @@ import { enrichCVEs } from '../services/cveEnrichmentService';
 import { processCVEs, generateScanSummary } from '../services/riskCalculatorService';
 import { generateTopology, generateRemediationGroups } from '../services/topologyService';
 import { runExposureScanning } from '../services/exposureScannerService';
+import { saveScanResult, getScanResult, deleteScanResult, listRecentScans, StoredScanResult } from '../services/firestoreService';
 
 const router = Router();
 
-// In-memory storage for scan results (would be database in production)
+// In-memory storage for legacy scan results only
 const scanResults: Map<string, ScanResult> = new Map();
+// In-memory cache for active scans (also persisted to Firestore)
 const extendedScanResults: Map<string, ExtendedScanResult> = new Map();
 
 // Start a new scan
@@ -104,15 +106,18 @@ router.get('/scans', (req: Request, res: Response) => {
 });
 
 // Delete a scan
-router.delete('/scan/:scanId', (req: Request, res: Response) => {
+router.delete('/scan/:scanId', async (req: Request, res: Response) => {
   const { scanId } = req.params;
 
-  if (!scanResults.has(scanId) && !extendedScanResults.has(scanId)) {
+  // Check both in-memory and Firestore
+  const storedResult = await getScanResult(scanId);
+  if (!scanResults.has(scanId) && !extendedScanResults.has(scanId) && !storedResult) {
     return res.status(404).json({ error: 'Scan not found' });
   }
 
   scanResults.delete(scanId);
   extendedScanResults.delete(scanId);
+  await deleteScanResult(scanId);
   res.json({ success: true });
 });
 
@@ -148,7 +153,15 @@ router.post('/exposure-scan', async (req: Request, res: Response) => {
     }
   };
 
+  // Save to both in-memory cache and Firestore
   extendedScanResults.set(scanId, scanResult);
+  await saveScanResult(scanId, {
+    scanId,
+    status: 'pending',
+    progress: 0,
+    progressMessage: 'Initializing exposure scan...',
+    metadata: scanResult.metadata
+  });
 
   // Return immediately with scan ID
   res.json({ scanId, status: 'pending' });
@@ -158,11 +171,25 @@ router.post('/exposure-scan', async (req: Request, res: Response) => {
 });
 
 // Get exposure scan status
-router.get('/exposure-scan/:scanId/status', (req: Request, res: Response) => {
+router.get('/exposure-scan/:scanId/status', async (req: Request, res: Response) => {
   const { scanId } = req.params;
-  const result = extendedScanResults.get(scanId);
 
+  // First check in-memory cache (for active scans)
+  let result = extendedScanResults.get(scanId);
+
+  // If not in memory, check Firestore
   if (!result) {
+    const storedResult = await getScanResult(scanId);
+    if (storedResult) {
+      // Return stored result
+      return res.json({
+        scanId: storedResult.scanId,
+        status: storedResult.status,
+        progress: storedResult.progress,
+        progressMessage: storedResult.progressMessage,
+        error: storedResult.error
+      });
+    }
     return res.status(404).json({ error: 'Scan not found' });
   }
 
@@ -176,12 +203,29 @@ router.get('/exposure-scan/:scanId/status', (req: Request, res: Response) => {
 });
 
 // Get exposure scan results
-router.get('/exposure-scan/:scanId/results', (req: Request, res: Response) => {
+router.get('/exposure-scan/:scanId/results', async (req: Request, res: Response) => {
   const { scanId } = req.params;
-  const result = extendedScanResults.get(scanId);
 
+  // First check in-memory cache
+  let result = extendedScanResults.get(scanId);
+
+  // If not in memory, check Firestore
   if (!result) {
-    return res.status(404).json({ error: 'Scan not found' });
+    const storedResult = await getScanResult(scanId);
+    if (!storedResult) {
+      return res.status(404).json({ error: 'Scan not found' });
+    }
+
+    if (storedResult.status !== 'complete' && storedResult.status !== 'error') {
+      return res.status(202).json({
+        scanId: storedResult.scanId,
+        status: storedResult.status,
+        progress: storedResult.progress,
+        progressMessage: storedResult.progressMessage
+      });
+    }
+
+    return res.json(storedResult.result || storedResult);
   }
 
   if (result.status !== 'complete' && result.status !== 'error') {
@@ -197,14 +241,16 @@ router.get('/exposure-scan/:scanId/results', (req: Request, res: Response) => {
 });
 
 // Get all exposure scans (for history)
-router.get('/exposure-scans', (req: Request, res: Response) => {
-  const scans = Array.from(extendedScanResults.values()).map(scan => ({
+router.get('/exposure-scans', async (req: Request, res: Response) => {
+  // Get from Firestore for persistence across restarts
+  const storedScans = await listRecentScans(20);
+  const scans = storedScans.map(scan => ({
     scanId: scan.scanId,
     status: scan.status,
     repoUrl: scan.metadata?.repoUrl,
     startTime: scan.metadata?.startTime,
-    totalExposures: scan.summary?.totalExposures || 0,
-    byType: scan.summary?.byType || {}
+    totalExposures: (scan.result as any)?.summary?.totalExposures || 0,
+    byType: (scan.result as any)?.summary?.byType || {}
   }));
 
   res.json(scans);
@@ -316,7 +362,7 @@ async function processExposureScan(
   branch: string,
   context?: ScanRequest['context']
 ) {
-  const updateStatus = (
+  const updateStatus = async (
     status: ExtendedScanResult['status'],
     progress: number,
     message: string,
@@ -330,24 +376,31 @@ async function processExposureScan(
       if (error) result.error = error;
       extendedScanResults.set(scanId, result);
     }
+    // Also persist to Firestore
+    await saveScanResult(scanId, {
+      status,
+      progress,
+      progressMessage: message,
+      error
+    });
   };
 
   let localPath = '';
 
   try {
     // Step 1: Clone repository
-    updateStatus('cloning', 10, 'Cloning repository...');
+    await updateStatus('cloning', 10, 'Cloning repository...');
     const cloneResult = await cloneRepository(repoUrl, isPrivate, pat, branch);
 
     if (!cloneResult.success) {
-      updateStatus('error', 0, 'Clone failed', cloneResult.error);
+      await updateStatus('error', 0, 'Clone failed', cloneResult.error);
       return;
     }
 
     localPath = cloneResult.localPath;
 
     // Step 2: Detect languages (quick operation)
-    updateStatus('detecting', 12, 'Detecting languages and technologies...');
+    await updateStatus('detecting', 12, 'Detecting languages and technologies...');
     const languages = detectLanguages(localPath);
 
     const result = extendedScanResults.get(scanId);
@@ -356,7 +409,7 @@ async function processExposureScan(
       extendedScanResults.set(scanId, result);
     }
 
-    updateStatus('scanning', 15, `Detected ${languages.length} language(s): ${languages.join(', ')}. Starting scans...`);
+    await updateStatus('scanning', 15, `Detected ${languages.length} language(s): ${languages.join(', ')}. Starting scans...`);
 
     // Step 3: Run comprehensive exposure scanning immediately
     const exposureResult = await runExposureScanning(
@@ -407,7 +460,7 @@ async function processExposureScan(
     );
 
     // Step 4: Generate topology (optional)
-    updateStatus('enriching', 96, 'Generating application topology...');
+    await updateStatus('enriching', 96, 'Generating application topology...');
 
     // Convert exposures to CVE format for topology (if needed)
     const cveExposures = exposureResult.exposures
@@ -442,11 +495,20 @@ async function processExposureScan(
         finalResult.metadata.endTime = new Date().toISOString();
       }
       extendedScanResults.set(scanId, finalResult);
+
+      // Persist complete result to Firestore
+      await saveScanResult(scanId, {
+        status: 'complete',
+        progress: 100,
+        progressMessage: 'Exposure scan complete',
+        metadata: finalResult.metadata,
+        result: finalResult
+      });
     }
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    updateStatus('error', 0, 'Scan failed', errorMessage);
+    await updateStatus('error', 0, 'Scan failed', errorMessage);
   } finally {
     // Cleanup cloned repository
     if (localPath) {

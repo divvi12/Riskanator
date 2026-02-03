@@ -27,6 +27,32 @@ export function initializeGemini(apiKey: string): boolean {
   }
 }
 
+// Validate Gemini API key by making a test call
+export async function validateGeminiApiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const testGenAI = new GoogleGenerativeAI(apiKey);
+    const model = testGenAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+    // Make a simple test call to validate the API key
+    const result = await model.generateContent('Say "API key validated" in exactly 3 words.');
+    const response = await result.response;
+    const text = response.text();
+
+    // If we got a response, the key is valid
+    if (text) {
+      // Also initialize the main genAI instance
+      genAI = testGenAI;
+      return { valid: true };
+    }
+
+    return { valid: false, error: 'No response from Gemini API' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Gemini API key validation failed:', message);
+    return { valid: false, error: message };
+  }
+}
+
 // Check if Gemini is initialized
 export function isGeminiInitialized(): boolean {
   return genAI !== null;
@@ -36,7 +62,7 @@ export function isGeminiInitialized(): boolean {
 export async function generateExposureExplanation(
   exposure: Exposure,
   context?: ApplicationContext,
-  model: string = 'gemini-1.5-pro'
+  model: string = 'gemini-2.5-flash'
 ): Promise<ExposureExplanation> {
   if (!genAI) {
     throw new Error('Gemini AI not initialized. Please provide an API key.');
@@ -53,8 +79,9 @@ export async function generateExposureExplanation(
 
     return parseExplanationResponse(text, exposure);
   } catch (error) {
-    console.error('Gemini API error:', error);
-    throw new Error('Failed to generate AI explanation');
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Gemini API error:', errorMessage);
+    throw new Error(`Gemini API error: ${errorMessage}`);
   }
 }
 
@@ -89,171 +116,82 @@ Application Context:
 }
 
 function buildCVEPrompt(cve: CVEExposure, appContext: string): string {
-  return `You are a security expert explaining a CVE vulnerability to a development team.
+  return `You are a security expert. Be CONCISE - each field should be 1-2 sentences max.
 
 ${appContext}
 
-CVE Details:
-- CVE ID: ${cve.cveId}
-- CVSS Score: ${cve.cvss}
-- EPSS Score: ${cve.epss ? (cve.epss * 100).toFixed(1) + '%' : 'N/A'} (probability of exploitation)
-- CISA KEV: ${cve.cisaKEV ? 'YES - Known to be actively exploited' : 'No'}
-- Severity: ${cve.severity}
-- Component: ${cve.component} v${cve.version}
-- Fixed Version: ${cve.fixedVersion || 'Unknown'}
-- Description: ${cve.description}
+CVE: ${cve.cveId} | CVSS: ${cve.cvss} | EPSS: ${cve.epss ? (cve.epss * 100).toFixed(1) + '%' : 'N/A'} | KEV: ${cve.cisaKEV ? 'YES' : 'No'}
+Component: ${cve.component} v${cve.version} → ${cve.fixedVersion || 'Unknown'}
+Description: ${cve.description}
 
-Please provide:
-1. A plain-language explanation of what this vulnerability means (2-3 sentences)
-2. The specific risk to this application given the context
-3. The potential business impact if exploited
-4. Step-by-step remediation guidance
-5. Priority recommendation (Immediate/High/Medium/Low) with justification
-
-Format your response as JSON with these fields: summary, riskAnalysis, businessImpact, remediation (array of steps), priority, priorityJustification`;
+Respond with brief JSON: summary (1-2 sentences), riskAnalysis (1 sentence), businessImpact (1 sentence), remediation (3-4 short action items), priority (Immediate/High/Medium/Low), priorityJustification (1 sentence)`;
 }
 
 function buildCertificatePrompt(cert: CertificateExposure, appContext: string): string {
-  return `You are a security expert explaining a certificate issue to a development team.
+  return `You are a security expert. Be CONCISE - each field should be 1-2 sentences max.
 
 ${appContext}
 
-Certificate Details:
-- Domain: ${cert.domain}
-- Status: ${cert.isExpired ? 'EXPIRED' : cert.daysUntilExpiration <= 30 ? 'EXPIRING SOON' : 'Valid'}
-- Days Until Expiration: ${cert.daysUntilExpiration}
-- Issuer: ${cert.issuer}
-- Algorithm: ${cert.algorithm}${cert.hasWeakAlgorithm ? ' (WEAK)' : ''}
-- Self-Signed: ${cert.isSelfSigned ? 'Yes' : 'No'}
-- Type: ${cert.certType}
-- Description: ${cert.description}
+Certificate: ${cert.domain} | Status: ${cert.isExpired ? 'EXPIRED' : cert.daysUntilExpiration + ' days left'}
+Issuer: ${cert.issuer} | Algorithm: ${cert.algorithm}${cert.hasWeakAlgorithm ? ' (WEAK)' : ''} | Self-signed: ${cert.isSelfSigned ? 'Yes' : 'No'}
 
-Please provide:
-1. A plain-language explanation of this certificate issue (2-3 sentences)
-2. The specific risk given the application context
-3. The potential business impact (downtime, trust issues, etc.)
-4. Step-by-step remediation guidance
-5. Priority recommendation with justification
-
-Format your response as JSON with these fields: summary, riskAnalysis, businessImpact, remediation (array of steps), priority, priorityJustification`;
+Respond with brief JSON: summary (1-2 sentences), riskAnalysis (1 sentence), businessImpact (1 sentence), remediation (3-4 short action items), priority, priorityJustification (1 sentence)`;
 }
 
 function buildSecretPrompt(secret: SecretExposure, appContext: string): string {
-  return `You are a security expert explaining a hardcoded secret/credential exposure to a development team.
+  return `You are a security expert. Be CONCISE - each field should be 1-2 sentences max.
 
 ${appContext}
 
-Secret Details:
-- Type: ${secret.secretType}
-- Location: ${secret.location}
-- Verified Active: ${secret.verified ? 'YES - Confirmed valid/active' : 'Unverified'}
-- In Git History: ${secret.inGitHistory ? 'YES - Present in commit history' : 'No'}
-- Detector: ${secret.detectorName}
-- Description: ${secret.description}
+Secret: ${secret.secretType} at ${secret.location}
+Verified: ${secret.verified ? 'YES - Active' : 'No'} | In Git History: ${secret.inGitHistory ? 'YES' : 'No'}
 
-Please provide:
-1. A plain-language explanation of this secret exposure (2-3 sentences)
-2. The specific risk given the application context
-3. The potential business impact if the secret is compromised
-4. Step-by-step remediation guidance (rotation, cleanup, prevention)
-5. Priority recommendation with justification
-
-Format your response as JSON with these fields: summary, riskAnalysis, businessImpact, remediation (array of steps), priority, priorityJustification`;
+Respond with brief JSON: summary (1-2 sentences), riskAnalysis (1 sentence), businessImpact (1 sentence), remediation (3-4 short action items), priority, priorityJustification (1 sentence)`;
 }
 
 function buildMisconfigPrompt(misconfig: MisconfigurationExposure, appContext: string): string {
-  return `You are a security expert explaining an infrastructure misconfiguration to a development team.
+  return `You are a security expert. Be CONCISE - each field should be 1-2 sentences max.
 
 ${appContext}
 
-Misconfiguration Details:
-- Resource Type: ${misconfig.resourceType}
-- Check ID: ${misconfig.checkId}
-- Check Name: ${misconfig.checkName}
-- Framework: ${misconfig.framework || 'Unknown'}
-- Publicly Accessible: ${misconfig.isPubliclyAccessible ? 'YES' : 'No'}
-- Location: ${misconfig.location}
-- Description: ${misconfig.description}
-${misconfig.guideline ? `- Reference: ${misconfig.guideline}` : ''}
+Misconfiguration: ${misconfig.checkName} (${misconfig.checkId})
+Resource: ${misconfig.resourceType} at ${misconfig.location} | Public: ${misconfig.isPubliclyAccessible ? 'YES' : 'No'}
 
-Please provide:
-1. A plain-language explanation of this misconfiguration (2-3 sentences)
-2. The specific risk given the application context
-3. The potential business impact
-4. Infrastructure-as-code fix (if applicable)
-5. Priority recommendation with justification
-
-Format your response as JSON with these fields: summary, riskAnalysis, businessImpact, remediation (array of steps), iacFix (code block if applicable), priority, priorityJustification`;
+Respond with brief JSON: summary (1-2 sentences), riskAnalysis (1 sentence), businessImpact (1 sentence), remediation (3-4 short action items), iacFix (brief code if applicable), priority, priorityJustification (1 sentence)`;
 }
 
 function buildLicensePrompt(license: LicenseExposure, appContext: string): string {
-  return `You are a legal/compliance expert explaining a software license issue to a development team.
+  return `You are a compliance expert. Be CONCISE - each field should be 1-2 sentences max.
 
 ${appContext}
 
-License Details:
-- Package: ${license.packageName} v${license.packageVersion}
-- License: ${license.licenseName} (${license.licenseType})
-- Copyleft: ${license.isCopyleft ? 'YES - Requires source disclosure' : 'No'}
-- Unknown License: ${license.isUnknown ? 'YES - License not recognized' : 'No'}
-- Requires Attribution: ${license.requiresAttribution ? 'Yes' : 'No'}
-- Commercial Use Allowed: ${license.commercialUseAllowed ? 'Yes' : 'No/Unknown'}
-- Description: ${license.description}
+License: ${license.packageName} v${license.packageVersion} - ${license.licenseName}
+Copyleft: ${license.isCopyleft ? 'YES' : 'No'} | Unknown: ${license.isUnknown ? 'YES' : 'No'} | Commercial OK: ${license.commercialUseAllowed ? 'Yes' : 'No'}
 
-Please provide:
-1. A plain-language explanation of this license issue (2-3 sentences)
-2. The legal/compliance risk given the application context
-3. The potential business impact (litigation, source disclosure, etc.)
-4. Step-by-step remediation guidance
-5. Priority recommendation with justification
-
-Format your response as JSON with these fields: summary, riskAnalysis, businessImpact, remediation (array of steps), priority, priorityJustification`;
+Respond with brief JSON: summary (1-2 sentences), riskAnalysis (1 sentence), businessImpact (1 sentence), remediation (3-4 short action items), priority, priorityJustification (1 sentence)`;
 }
 
 function buildCodeSecurityPrompt(codeSec: CodeSecurityExposure, appContext: string): string {
-  return `You are a security expert explaining a code security vulnerability to a development team.
+  return `You are a security expert. Be CONCISE - each field should be 1-2 sentences max.
 
 ${appContext}
 
-Code Security Issue:
-- Type: ${codeSec.issueType}
-- Rule: ${codeSec.ruleName} (${codeSec.ruleId})
-- Location: ${codeSec.location} (line ${codeSec.lineNumber})
-- CWE: ${codeSec.cwe?.join(', ') || 'N/A'}
-- OWASP: ${codeSec.owasp?.join(', ') || 'N/A'}
-- Description: ${codeSec.description}
-${codeSec.codeSnippet ? `- Code: ${codeSec.codeSnippet}` : ''}
+Code Issue: ${codeSec.ruleName} (${codeSec.ruleId}) at ${codeSec.location}:${codeSec.lineNumber}
+CWE: ${codeSec.cwe?.join(', ') || 'N/A'} | OWASP: ${codeSec.owasp?.join(', ') || 'N/A'}
+${codeSec.codeSnippet ? `Code: ${codeSec.codeSnippet}` : ''}
 
-Please provide:
-1. A plain-language explanation of this vulnerability (2-3 sentences)
-2. The specific attack scenario and risk
-3. The potential business impact if exploited
-4. Fixed code example
-5. Priority recommendation with justification
-
-Format your response as JSON with these fields: summary, riskAnalysis, businessImpact, remediation (array of steps), fixedCode (code block), priority, priorityJustification`;
+Respond with brief JSON: summary (1-2 sentences), riskAnalysis (1 sentence), businessImpact (1 sentence), remediation (3-4 short action items), fixedCode (brief fix), priority, priorityJustification (1 sentence)`;
 }
 
 function buildGenericPrompt(exposure: Exposure, appContext: string): string {
-  return `You are a security expert explaining a security exposure to a development team.
+  return `You are a security expert. Be CONCISE - each field should be 1-2 sentences max.
 
 ${appContext}
 
-Exposure Details:
-- Type: ${exposure.type}
-- Title: ${exposure.title}
-- Severity: ${exposure.severity}
-- Location: ${exposure.location}
-- Description: ${exposure.description}
+Exposure: ${exposure.type} - ${exposure.title} (${exposure.severity})
+Location: ${exposure.location}
 
-Please provide:
-1. A plain-language explanation (2-3 sentences)
-2. The specific risk given the application context
-3. The potential business impact
-4. Remediation guidance
-5. Priority recommendation with justification
-
-Format your response as JSON with these fields: summary, riskAnalysis, businessImpact, remediation (array of steps), priority, priorityJustification`;
+Respond with brief JSON: summary (1-2 sentences), riskAnalysis (1 sentence), businessImpact (1 sentence), remediation (3-4 short action items), priority, priorityJustification (1 sentence)`;
 }
 
 function getDataSensitivitySummary(context: ApplicationContext): string {
@@ -307,7 +245,7 @@ function parseExplanationResponse(text: string, exposure: Exposure): ExposureExp
 export async function generateExecutiveSummary(
   exposures: Exposure[],
   context?: ApplicationContext,
-  model: string = 'gemini-1.5-pro'
+  model: string = 'gemini-2.5-flash'
 ): Promise<ExecutiveSummary> {
   if (!genAI) {
     throw new Error('Gemini AI not initialized. Please provide an API key.');

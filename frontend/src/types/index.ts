@@ -580,6 +580,30 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: 'all_rounder', name: 'All-Rounder', description: 'Fix at least one of each exposure type', icon: '🎯', category: 'special', xpReward: 500, requirement: { type: 'special' }, rarity: 'epic' },
 ];
 
+// ============================================================
+// AI EXPLANATION TYPES
+// ============================================================
+
+export interface ExposureExplanation {
+  exposureId: string;
+  exposureType: string;
+  summary: string;
+  riskAnalysis: string;
+  businessImpact: string;
+  remediation: string[];
+  fixedCode?: string;
+  priority: string;
+  priorityJustification: string;
+  generatedAt: string;
+}
+
+export interface GeminiSettings {
+  apiKey: string;
+  enabled: boolean;
+  model: string;
+  autoExplain: boolean;
+}
+
 // Criticality tiers
 export const CRITICALITY_TIERS = [
   {

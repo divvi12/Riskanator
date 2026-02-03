@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Button,
@@ -6,9 +6,11 @@ import {
   Tag,
   Tile,
   Search,
-  Tooltip
+  Tooltip,
+  InlineLoading,
+  InlineNotification
 } from '@carbon/react';
-import { Add, Warning, Information, Security, Certificate, Password, SettingsCheck, Document, Code, Help } from '@carbon/icons-react';
+import { Add, Warning, Information, Security, Certificate, Password, SettingsCheck, Document, Code, Help, Bot, Renew } from '@carbon/icons-react';
 import { useAppContext } from '../App';
 import {
   Exposure,
@@ -18,8 +20,11 @@ import {
   MisconfigurationExposure,
   LicenseExposure,
   CodeSecurityExposure,
-  ExposureType
+  ExposureType,
+  ExposureExplanation,
+  GeminiSettings
 } from '../types';
+import { initializeGemini, explainExposure } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip as ChartTooltip, ResponsiveContainer, Cell } from 'recharts';
 import { demoExposures } from '../data/demoData';
 
@@ -550,6 +555,87 @@ function ExposureDetail({ exposure }: { exposure: Exposure }) {
   const Icon = EXPOSURE_ICONS[exposure.type] || Security;
   const color = EXPOSURE_COLORS[exposure.type] || '#78a9ff';
 
+  // AI Explanation state
+  const [aiExplanation, setAiExplanation] = useState<ExposureExplanation | null>(null);
+  const [isLoadingAI, setIsLoadingAI] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [geminiConfig, setGeminiConfig] = useState<GeminiSettings | null>(null);
+
+  // Load Gemini config from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedSettings = localStorage.getItem('concert-tem-settings');
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        if (parsed.geminiConfig) {
+          // Fix old/invalid model names
+          const validModels = ['gemini-2.5-flash', 'gemini-2.5-pro'];
+          if (!validModels.includes(parsed.geminiConfig.model)) {
+            parsed.geminiConfig.model = 'gemini-2.5-flash';
+          }
+          setGeminiConfig(parsed.geminiConfig);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load Gemini settings:', error);
+    }
+  }, []);
+
+  // Check if AI is available
+  const isAIAvailable = geminiConfig?.enabled && geminiConfig?.apiKey;
+
+  // Handle AI explanation request
+  const handleExplainWithAI = async () => {
+    if (!geminiConfig?.apiKey) return;
+
+    setIsLoadingAI(true);
+    setAiError(null);
+
+    try {
+      // Initialize Gemini backend with API key
+      await initializeGemini(geminiConfig.apiKey);
+
+      // Get application context from localStorage if available
+      const savedSettings = localStorage.getItem('concert-tem-settings');
+      let appContext = undefined;
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        if (parsed.appContext) {
+          appContext = {
+            appName: 'Application',
+            industry: 'technology',
+            purpose: 'General application',
+            criticality: parsed.appContext.criticality || 3,
+            dataSensitivity: parsed.appContext.dataSensitivity || { pii: false, phi: false, pci: false, tradeSecrets: false },
+            accessControls: {
+              publicEndpoints: parsed.appContext.publicEndpoints || 0,
+              privateEndpoints: parsed.appContext.privateEndpoints || 5,
+              networkExposure: parsed.appContext.networkExposure || 'internal',
+              controls: []
+            },
+            formula: parsed.riskFormula || 'concert'
+          };
+        }
+      }
+
+      // Call the AI explain endpoint
+      const explanation = await explainExposure(exposure, appContext, geminiConfig.model);
+      setAiExplanation(explanation);
+    } catch (error: any) {
+      console.error('AI explanation error:', error);
+      console.error('Response data:', error?.response?.data);
+      console.error('Response status:', error?.response?.status);
+      // Extract detailed error message from axios response
+      const serverMessage = error?.response?.data?.message || error?.response?.data?.error;
+      const statusText = error?.response?.statusText;
+      const axiosMessage = error?.message;
+      const errorMessage = serverMessage || statusText || axiosMessage || 'Failed to generate AI explanation';
+      setAiError(errorMessage);
+    } finally {
+      setIsLoadingAI(false);
+    }
+  };
+
   return (
     <div>
       {/* Header */}
@@ -582,6 +668,100 @@ function ExposureDetail({ exposure }: { exposure: Exposure }) {
         </h4>
         <p style={{ color: 'var(--cve-text-secondary)', lineHeight: 1.6 }}>{exposure.description}</p>
       </div>
+
+      {/* AI Explanation Button - Only show if Gemini is configured */}
+      {isAIAvailable && (
+        <div style={{ marginBottom: '1rem' }}>
+          {!aiExplanation && !isLoadingAI && (
+            <Button
+              kind="tertiary"
+              size="sm"
+              renderIcon={Bot}
+              onClick={handleExplainWithAI}
+            >
+              Explain with AI
+            </Button>
+          )}
+
+          {isLoadingAI && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <InlineLoading description="Generating AI explanation..." />
+            </div>
+          )}
+
+          {aiError && (
+            <InlineNotification
+              kind="error"
+              title="AI Error"
+              subtitle={aiError}
+              lowContrast
+              style={{ marginBottom: '1rem' }}
+            />
+          )}
+
+          {aiExplanation && (
+            <Tile style={{ padding: '1rem', backgroundColor: '#262626', border: '1px solid #8A3FFC', marginTop: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Bot size={20} style={{ color: '#8A3FFC' }} />
+                  <h4 style={{ margin: 0 }}>AI Analysis</h4>
+                  <Tag type="purple" size="sm">{aiExplanation.priority}</Tag>
+                </div>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  renderIcon={Renew}
+                  iconDescription="Regenerate"
+                  hasIconOnly
+                  onClick={handleExplainWithAI}
+                />
+              </div>
+
+              {/* Summary */}
+              <div style={{ marginBottom: '1rem' }}>
+                <h5 style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Summary</h5>
+                <p style={{ lineHeight: 1.6, margin: 0 }}>{aiExplanation.summary}</p>
+              </div>
+
+              {/* Risk Analysis */}
+              <div style={{ marginBottom: '1rem' }}>
+                <h5 style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Risk Analysis</h5>
+                <p style={{ lineHeight: 1.6, margin: 0 }}>{aiExplanation.riskAnalysis}</p>
+              </div>
+
+              {/* Business Impact */}
+              <div style={{ marginBottom: '1rem' }}>
+                <h5 style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Business Impact</h5>
+                <p style={{ lineHeight: 1.6, margin: 0 }}>{aiExplanation.businessImpact}</p>
+              </div>
+
+              {/* Remediation Steps */}
+              <div style={{ marginBottom: aiExplanation.fixedCode ? '1rem' : 0 }}>
+                <h5 style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Remediation Steps</h5>
+                <ol style={{ paddingLeft: '1.25rem', margin: 0, lineHeight: 1.8 }}>
+                  {aiExplanation.remediation.map((step, index) => (
+                    <li key={index} style={{ marginBottom: '0.25rem' }}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+
+              {/* Fixed Code (if available) */}
+              {aiExplanation.fixedCode && (
+                <div>
+                  <h5 style={{ fontSize: '0.75rem', color: 'var(--cve-text-secondary)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Suggested Fix</h5>
+                  <pre style={{ backgroundColor: '#161616', padding: '0.75rem', borderRadius: '4px', fontSize: '0.75rem', overflow: 'auto', margin: 0, border: '1px solid #393939' }}>
+                    {aiExplanation.fixedCode}
+                  </pre>
+                </div>
+              )}
+
+              <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: 'var(--cve-text-secondary)' }}>
+                <em>Priority: {aiExplanation.priority} - {aiExplanation.priorityJustification}</em>
+              </div>
+            </Tile>
+          )}
+        </div>
+      )}
 
       {/* Location */}
       <div style={{ marginBottom: '1rem' }}>

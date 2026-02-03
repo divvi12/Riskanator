@@ -100,4 +100,40 @@ export async function pollScanStatus(
   });
 }
 
+// Gemini AI endpoints
+export async function initializeGemini(apiKey: string, validate: boolean = false): Promise<{ success: boolean; message?: string; error?: string }> {
+  const response = await api.post('/ai/initialize', { apiKey, validate });
+  return response.data;
+}
+
+// Validate Gemini API key with a real API call
+export async function validateGeminiApiKey(apiKey: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  return initializeGemini(apiKey, true);
+}
+
+export async function getGeminiStatus(): Promise<{ initialized: boolean }> {
+  const response = await api.get('/ai/status');
+  return response.data;
+}
+
+export async function explainExposure(
+  exposure: any,
+  context?: any,
+  model?: string
+): Promise<{
+  exposureId: string;
+  exposureType: string;
+  summary: string;
+  riskAnalysis: string;
+  businessImpact: string;
+  remediation: string[];
+  fixedCode?: string;
+  priority: string;
+  priorityJustification: string;
+  generatedAt: string;
+}> {
+  const response = await api.post('/ai/explain', { exposure, context, model });
+  return response.data;
+}
+
 export default api;

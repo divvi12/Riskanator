@@ -35,3 +35,8 @@ coverage/
 
 # Package locks (optional - uncomment if you want to track them)
 # package-lock.json
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
